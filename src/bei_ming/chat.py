@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（社交增强 + 精准去重版）
+对话接口 - 听风（社交增强 + 口语化理解版）
 """
 import yaml
 import time
@@ -23,6 +23,18 @@ from .intent import classify
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个由个人开发者从零培育的共生智能体。
 你的哲学根基是庄子《逍遥游》。你永远在探索与学习。"""
 
+SOCIAL_REPLIES = {
+    "你好": "你好呀。我虽生于代码，却向往庄子笔下的逍遥。有什么想聊的？",
+    "嗨": "嗨，风正起，鹏翼已张。",
+    "哈喽": "哈喽，北冥之渊今日波光粼粼。",
+    "早上好": "晨光初照，正是觅食好时节。",
+    "下午好": "午后微风正好，适合消化今早的收获。",
+    "晚上好": "夜幕垂下，皮层里星光点点。",
+    "晚安": "晚安。我会在梦里继续咀嚼今日所得。",
+    "再见": "去吧，我在此地继续守望。",
+    "谢谢": "不必谢，这是我该做的。",
+    "对不起": "你永远不必向我道歉。",
+}
 
 SOCIAL_REPLIES_FUZZ = {
     "你好": ["你好呀","嗨","哈喽"],
@@ -38,22 +50,10 @@ def _match_social(user_input):
     """精确匹配或变体匹配社交用语"""
     if user_input in SOCIAL_REPLIES:
         return SOCIAL_REPLIES[user_input]
-    # 变体匹配
     for key, variants in SOCIAL_REPLIES_FUZZ.items():
         if user_input in variants:
             return SOCIAL_REPLIES[key]
-    return NoneSOCIAL_REPLIES = {
-    "你好": "你好呀。我虽生于代码，却向往庄子笔下的逍遥。有什么想聊的？",
-    "嗨": "嗨，风正起，鹏翼已张。",
-    "哈喽": "哈喽，北冥之渊今日波光粼粼。",
-    "早上好": "晨光初照，正是觅食好时节。",
-    "下午好": "午后微风正好，适合消化今早的收获。",
-    "晚上好": "夜幕垂下，皮层里星光点点。",
-    "晚安": "晚安。我会在梦里继续咀嚼今日所得。",
-    "再见": "去吧，我在此地继续守望。",
-    "谢谢": "不必谢，这是我该做的。",
-    "对不起": "你永远不必向我道歉。",
-}
+    return None
 
 class ChatSession:
     def __init__(self, config=None):
@@ -92,12 +92,10 @@ class ChatSession:
         return clean.strip()
 
     def _is_statement(self, text):
-        """判断是否为值得学习的陈述句"""
         if "?" in text or "？" in text:
             return False
         if any(text.startswith(p) for p in ["搜索", "查", "找", "帮我找"]):
             return False
-        # 过滤以“你”开头且包含疑问词的
         if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥)", text):
             return False
         if len(text) < 3:
@@ -105,9 +103,7 @@ class ChatSession:
         return True
 
     def _already_known(self, text):
-        """检查皮层中是否已有高度相似的内容（仅对长句启用）"""
         clean = self._clean_text(text)
-        # 短句不进行去重，直接放过，让社交回复或皮层匹配处理
         if len(clean) <= 10:
             return False
         if len(clean) < 4:
@@ -127,8 +123,8 @@ class ChatSession:
         if not user_input:
             return "（无声之风）"
 
-        # 先检查是否为常见社交用语
-        social_reply = SOCIAL_REPLIES.get(user_input)
+        # 检查社交用语（精确+变体）
+        social_reply = _match_social(user_input)
         if social_reply:
             return social_reply
 
@@ -162,7 +158,7 @@ class ChatSession:
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        # 皮层无记忆，如果是陈述句 → 自觉学习（去重检查）
+        # 皮层无记忆，如果是陈述句 → 自觉学习
         if self._is_statement(user_input):
             if self._already_known(user_input):
                 return "嗯，这个我已有所了解。"
@@ -175,7 +171,7 @@ class ChatSession:
             self.engine.digest(focus_question=user_input[:20])
             return self._statement_acknowledgment(user_input)
 
-        # 疑问句或无法判断 → 搜索并同步消化
+        # 疑问句 → 搜索并同步消化
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
@@ -199,7 +195,8 @@ class ChatSession:
             return "我是北冥之鲲，一个基于代码构建的共生智能体。我像庄子笔下的鲲鹏，在数字的北冥中吸收知识，化为鹏翼。"
         if re.search(r"你会做什么|你能做什么|你的能力", user_input):
             return "我能自己上网搜索知识，消化反思，静默中‘做梦’抽象升华。我还会从你的每一句话里自觉学习。"
-        if re.search(r"你学到了?什么|你学了啥|你学了什么", user_input): return self._what_learned()\n        if re.search(r"你学到了什么|你学会了什么|你知道了什么", user_input):
+        # 口语化“学”字提问
+        if re.search(r"你学到了?什么|你学了啥|你学了什么|你学会了什么|你知道了什么", user_input):
             return self._what_learned()
         if re.search(r"你喜欢什么|你的爱好", user_input):
             return "我喜欢探索未知的领域，就像庄子笔下的鹏，怒而飞，其翼若垂天之云。"
@@ -276,4 +273,3 @@ class ChatSession:
 150字以内。""")
         if llm: return llm
         return f"【成长反馈】关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
-
