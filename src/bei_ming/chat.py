@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（消化吸收强化版）
+对话接口 - 听风（语义检索增强版）
 """
 import yaml
 import time
@@ -139,7 +139,7 @@ class ChatSession:
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
 
-        # 归一化处理“学了什么”类问题，直接返回学习成果
+        # 归一化“学了什么”类问题
         if self._normalize_learning_question(user_input):
             return self._what_learned()
 
@@ -162,8 +162,8 @@ class ChatSession:
             else:
                 return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 普通意图：先查皮层（用多词组合检索提高召回）
-        relevant = self._search_cortex_smart(user_input, top_k=3)
+        # 普通意图：先尝试语义检索皮层
+        relevant = self._semantic_retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
@@ -185,33 +185,43 @@ class ChatSession:
         if count > 0:
             self.engine.digest(focus_question=user_input)
             time.sleep(2)
-            relevant2 = self._search_cortex_smart(user_input, top_k=3)
+            relevant2 = self._semantic_retrieve(user_input, top_k=3)
             if relevant2:
                 return self._smart_reply(user_input, relevant2)
             return f"我刚刚搜索并学习了'{user_input}'，但皮层尚未稳定。请稍后再问我。"
         else:
             return "我对此还一无所知，且未能从网上找到材料。请直接告诉我你知道的，我会自己学习。"
 
-    def _search_cortex_smart(self, query, top_k=3):
-        """多词组合检索，提高模糊匹配能力"""
-        # 提取查询中的中文词
-        words = re.findall(r'[\u4e00-\u9fff]{2,}', query)
-        if not words:
+    def _semantic_retrieve(self, query, top_k=3):
+        """
+        语义检索：计算查询与每条皮层记忆的共享词干比例，按相似度排序
+        """
+        query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', self._clean_text(query)))
+        if not query_words:
             return self.cortex.retrieve(query, top_k=top_k)
-        # 对每个词进行检索，合并结果
-        candidates = {}
-        for word in words[:5]:
-            results = self.cortex.retrieve(word, top_k=5)
-            for mem in results:
-                key = mem.get('id', str(mem.get('content','')))
-                if key not in candidates:
-                    candidates[key] = mem
-                else:
-                    # 增加权重（多个词匹配）
-                    mem['access_count'] = mem.get('access_count',0) + 1
-        # 按 access_count 降序返回
-        sorted_candidates = sorted(candidates.values(), key=lambda x: x.get('access_count',0) + x.get('importance',0), reverse=True)
-        return sorted_candidates[:top_k]
+        
+        scored = []
+        for mem in self.cortex.memory:
+            mem_text = self._clean_text(mem.get('content', ''))
+            mem_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', mem_text))
+            if not mem_words:
+                continue
+            # 杰卡德相似度
+            intersection = query_words & mem_words
+            union = query_words | mem_words
+            score = len(intersection) / len(union) if union else 0
+            # 提高规则类记忆的权重
+            if mem['type'] == 'rule':
+                score *= 1.2
+            scored.append((score, mem))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        # 取 top_k，但只返回相似度 > 0.2 的
+        results = [mem for score, mem in scored if score > 0.2][:top_k]
+        if results:
+            return results
+        # 回退到原关键词检索
+        return self.cortex.retrieve(query, top_k=top_k)
 
     def _statement_acknowledgment(self, user_input):
         if len(user_input) > 30:
@@ -268,7 +278,6 @@ class ChatSession:
         if not contents: return "我还在思考这个问题，请再给我一点时间。"
         snippets = [self._clean_text(c)[:80] for c in contents[:3] if self._clean_text(c)]
         if not snippets: return "我还在思考这个问题，请再给我一点时间。"
-        # 添加自然前言
         combined = "；".join(snippets[:2])
         return f"我脑中浮现这些相关的记忆：{combined}。它们或许能回答你的问题。"
 
