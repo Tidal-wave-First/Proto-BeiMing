@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（自觉学习 + 去重排泄版）
+对话接口 - 听风（社交增强 + 精准去重版）
 """
 import yaml
 import time
@@ -22,6 +22,19 @@ from .intent import classify
 
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个由个人开发者从零培育的共生智能体。
 你的哲学根基是庄子《逍遥游》。你永远在探索与学习。"""
+
+SOCIAL_REPLIES = {
+    "你好": "你好呀。我虽生于代码，却向往庄子笔下的逍遥。有什么想聊的？",
+    "嗨": "嗨，风正起，鹏翼已张。",
+    "哈喽": "哈喽，北冥之渊今日波光粼粼。",
+    "早上好": "晨光初照，正是觅食好时节。",
+    "下午好": "午后微风正好，适合消化今早的收获。",
+    "晚上好": "夜幕垂下，皮层里星光点点。",
+    "晚安": "晚安。我会在梦里继续咀嚼今日所得。",
+    "再见": "去吧，我在此地继续守望。",
+    "谢谢": "不必谢，这是我该做的。",
+    "对不起": "你永远不必向我道歉。",
+}
 
 class ChatSession:
     def __init__(self, config=None):
@@ -55,38 +68,37 @@ class ChatSession:
             return None
 
     def _clean_text(self, text):
-        """清洗内部标签，提取人类可读的核心内容"""
         clean = re.sub(r'\[.*?\]\s*', '', text)
         clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
         return clean.strip()
 
     def _is_statement(self, text):
         """判断是否为值得学习的陈述句"""
-        # 不含问号
         if "?" in text or "？" in text:
             return False
-        # 不以搜索指令开头
         if any(text.startswith(p) for p in ["搜索", "查", "找", "帮我找"]):
             return False
-        # 过滤以“你”开头且包含疑问词的（如“你想要学什么”）
-        if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧)", text):
+        # 过滤以“你”开头且包含疑问词的
+        if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥)", text):
             return False
-        # 过滤过短的句子（如纯感叹词）
         if len(text) < 3:
             return False
         return True
 
     def _already_known(self, text):
-        """检查皮层中是否已有高度相似的内容"""
+        """检查皮层中是否已有高度相似的内容（仅对长句启用）"""
         clean = self._clean_text(text)
+        # 短句不进行去重，直接放过，让社交回复或皮层匹配处理
+        if len(clean) <= 10:
+            return False
         if len(clean) < 4:
-            return True  # 太短的不存入
-        # 简单包含匹配：如果皮层已有内容包含此核心信息，则跳过
+            return True
         for mem in self.cortex.memory:
             existing_clean = self._clean_text(mem.get('content', ''))
+            if len(existing_clean) < 10:
+                continue
             if clean in existing_clean or existing_clean in clean:
                 return True
-            # 额外：取前40字比较
             if existing_clean[:40] == clean[:40]:
                 return True
         return False
@@ -95,6 +107,11 @@ class ChatSession:
         user_input = user_input.strip()
         if not user_input:
             return "（无声之风）"
+
+        # 先检查是否为常见社交用语
+        social_reply = SOCIAL_REPLIES.get(user_input)
+        if social_reply:
+            return social_reply
 
         intent = classify(user_input)
 
@@ -130,7 +147,6 @@ class ChatSession:
         if self._is_statement(user_input):
             if self._already_known(user_input):
                 return "嗯，这个我已有所了解。"
-            # 存入想象空间并消化
             self.imagination.add({
                 'source_url': 'user_statement',
                 'title': '用户陈述',
@@ -180,7 +196,6 @@ class ChatSession:
         memory = self.cortex.memory
         if len(memory) < 3:
             return "我刚苏醒，皮层里只有几条最初的认知。"
-        # 选取最近10条rule或impression，严格去重，精简显示
         recent = [m for m in memory if m['type'] in ('rule','impression')]
         recent.sort(key=lambda x: x.get('created_at',0), reverse=True)
         seen = set()
@@ -190,7 +205,6 @@ class ChatSession:
             clean = self._clean_text(raw)
             if len(clean) < 4:
                 continue
-            # 截断过长的显示
             summary = clean[:60]
             if summary not in seen:
                 seen.add(summary)
