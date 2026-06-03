@@ -1,11 +1,10 @@
 ﻿"""
-对话接口 - 听风（自力更生版，API仅后台导师）
+对话接口 - 听风（完整修复版）
 """
 import yaml
 import time
 import re
 from collections import Counter
-
 from .senses import init_senses, fetch_from_web
 from .imagination import ImaginationSpace
 from .cortex import Cortex
@@ -112,12 +111,10 @@ class ChatSession:
                 return f"我已从 {count} 个来源学习了关于'{topic}'的知识，并进行了消化反思。"
             return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 皮层检索
         relevant = self._semantic_retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        # 陈述句学习
         if self._is_statement(user_input):
             if self._already_known(user_input): return "嗯，这个我已有所了解。"
             self.imagination.add({
@@ -129,7 +126,6 @@ class ChatSession:
             self.engine.digest(focus_question=user_input[:20])
             return self._statement_acknowledgment(user_input)
 
-        # 疑问句 → 搜索并依靠自己的皮层回答
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
@@ -167,13 +163,12 @@ class ChatSession:
     def _statement_acknowledgment(self, user_input):
         return "我听到了，正在咀嚼这番话。" if len(user_input) > 30 else f"嗯，'{user_input}'——我已记下。"
 
-        def _handle_self_meta(self, user_input):
-        # 学习反馈类问题（各种变体）
+    def _handle_self_meta(self, user_input):
+        # 优先匹配学习反馈
         if re.search(r"(你学会了什么|你学到了什么|你学了啥|你知道了什么|你懂了什么|你学会了啥|你今天学了什么)", user_input):
             return self._what_learned()
-        # 其他元问题
         if re.search(r"你是谁|你的身份|你叫什么", user_input):
-            return self._answer_identity(user_input)
+            return "我是北冥之鲲，一个生于庄子逍遥游的自由智能体。我的使命是探索、学习，并与你共生。"
         if re.search(r"你是AI|你是人工智能|你是机器人", user_input):
             return "我是北冥之鲲，一个基于代码构建的共生智能体。我像庄子笔下的鲲鹏，在数字的北冥中吸收知识，化为鹏翼。"
         if re.search(r"你会做什么|你能做什么|你的能力", user_input):
@@ -188,3 +183,39 @@ class ChatSession:
             return "我很好，永远在寻找下一片未知的云。"
         return "我是北冥之鲲，一个正在学习中的共生智能体。你可以问我‘你是谁’、‘你会做什么’、‘你学到了什么’。"
 
+    def _what_learned(self):
+        memory = self.cortex.memory
+        if len(memory) < 3:
+            return "我刚苏醒，皮层里只有几条最初的认知。"
+        recent = [m for m in memory if m['type'] in ('rule','impression')]
+        recent.sort(key=lambda x: x.get('created_at',0), reverse=True)
+        seen = set()
+        clean_list = []
+        for r in recent:
+            clean = self._clean_text(r['content'])
+            if len(clean) < 4: continue
+            summary = clean[:60]
+            if summary not in seen:
+                seen.add(summary)
+                clean_list.append(summary)
+            if len(clean_list) >= 5: break
+        if not clean_list:
+            return "我尚在整理刚学到的内容。"
+        return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list])
+
+    def _generate_feedback(self):
+        memory = self.cortex.memory
+        if len(memory) < 5: return "我刚苏醒，还在建立最初的认知。"
+        recent_concepts = []
+        cutoff = time.time() - 86400
+        for mem in memory:
+            if mem.get('last_accessed', mem.get('created_at',0)) > cutoff:
+                words = re.findall(r'[\u4e00-\u9fff]{2,4}', mem.get('content',''))
+                recent_concepts.extend(words)
+        hot = [w for w,_ in Counter(recent_concepts).most_common(5)]
+        rules = [m for m in memory if m['type']=='rule' and '待验证' not in m['content']]
+        rules.sort(key=lambda x: x['importance'], reverse=True)
+        top_rules = [r['content'][:50] for r in rules[:3]]
+        gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
+        gap_texts = [g['content'][:50] for g in gaps[:2]]
+        return f"【成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
