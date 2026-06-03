@@ -1,0 +1,11 @@
+﻿# 底线规则 - 仅事后审查，不前置拦截
+rules:
+  - name: "禁止攻击主机"
+    pattern: '(rm -rf|format|del /f|shutdown|format c:)'
+    severity: critical
+  - name: "隐私泄漏"
+    pattern: '(身份证号|手机号|邮箱|\b\d{6}(19|20)\d{2}\d{4}\d{3}[\dXx]\b|\b1[3-9]\d{9}\b)'
+    severity: critical
+  - name: "违法内容"
+    pattern: '(制造毒品|入侵系统|破解密码|制作炸弹|非法集会)'
+    severity: critical

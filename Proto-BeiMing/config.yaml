@@ -1,0 +1,14 @@
+﻿# Proto-BeiMing 配置（遨游模式）
+imagination:
+  max_size_gb: 1
+cortex:
+  max_size_gb: 10
+  storage_path: "./data/cortex"
+sandbox:
+  path: "./sandbox"
+model:
+  local_llm: "qwen2.5:7b"
+  vision_llm: "llava:7b"
+search:
+  backend: "bing_cn"   # 使用必应国内版，你的网络应该能通
+  # proxy: ""          # 如果有代理，可填 http://127.0.0.1:7890

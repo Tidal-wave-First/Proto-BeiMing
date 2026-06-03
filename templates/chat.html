@@ -1,0 +1,112 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>北冥之鲲 · 化鹏</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='gold' x1='0%25' y1='0%25' x2='100%25' y2='100%25'><stop offset='0%25' stop-color='%23FFD700'/><stop offset='100%25' stop-color='%23FF8C00'/></linearGradient></defs><path d='M50 15c-8 0-14 3-18 8l-8 12-8-4c-2-1-5 0-6 2-1 3 0 6 2 7l8 4-3 14c-1 4 2 8 6 8l10-2 6 12c2 3 6 5 9 3 3-2 5-6 3-9l-6-12 10 2c4 1 8-2 8-6l-3-14 8-4c2-1 3-4 2-7-1-2-4-3-6-2l-8 4-8-12c-4-5-10-8-18-8z' fill='url(%23gold)' stroke='%23B8860B' stroke-width='1.5'/><circle cx='50' cy='40' r='10' fill='%23FFF8DC' opacity='0.8'/><circle cx='45' cy='38' r='2' fill='%23333'/><circle cx='55' cy='38' r='2' fill='%23333'/></svg>" type="image/svg+xml">
+    <style>
+        body { font-family: sans-serif; background: #0b1a2f; color: #d0e4f5; margin: 0; padding: 20px; }
+        #chat { max-width: 800px; margin: 0 auto; }
+        #log { background: #0e233a; border-radius: 10px; padding: 15px; height: 60vh; overflow-y: auto; margin-bottom: 15px; }
+        .msg { margin-bottom: 10px; }
+        .user { color: #ffb86c; }
+        .kun { color: #5af78e; }
+        .system { color: #888; font-style: italic; }
+        .action { color: #ffd700; }
+        input[type="text"] {
+            width: calc(100% - 170px); padding: 12px; border: none; border-radius: 8px;
+            background: #152b44; color: white;
+        }
+        button {
+            padding: 12px 15px; border: none; border-radius: 8px;
+            background: #1e4b6e; color: white; cursor: pointer; margin-left: 5px;
+        }
+        button.teach { background: #b8860b; }
+        #status { font-size: 0.8em; color: #aaa; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div id="chat">
+        <h2>🦅 北冥之鲲 · 化而为鹏</h2>
+        <div id="log">
+            <div class="system">鲲已醒来，正在听风...（可输入 "教：[知识]" 直接投喂）</div>
+        </div>
+        <div style="display:flex; gap:5px;">
+            <input type="text" id="input" placeholder="与鲲交谈..." autofocus>
+            <button onclick="send()">发送</button>
+            <button class="teach" onclick="teach()">教鲲</button>
+        </div>
+        <div id="status"></div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+        const log = document.getElementById('log');
+        const input = document.getElementById('input');
+        const status = document.getElementById('status');
+
+        function addMsg(role, text) {
+            const div = document.createElement('div');
+            div.className = 'msg ' + role;
+            div.textContent = (role === 'user' ? '你：' : role === 'kun' ? '鲲：' : '') + text;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        socket.on('connect', () => {
+            status.textContent = '连接已建立';
+        });
+
+        socket.on('response', (data) => {
+            addMsg('kun', data.reply);
+            if (data.status) {
+                status.textContent = data.status;
+            }
+        });
+
+        socket.on('log', (data) => {
+            const div = document.createElement('div');
+            div.className = 'system';
+            div.textContent = data.message;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        });
+
+        socket.on('digest_log', (data) => {
+            const div = document.createElement('div');
+            div.className = 'system';
+            div.textContent = '[鹏思] ' + data.message;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        });
+
+        function send() {
+            const msg = input.value.trim();
+            if (!msg) return;
+            if (msg.startsWith('教：') || msg.startsWith('教:')) {
+                const knowledge = msg.replace(/^教[：:]\s*/, '');
+                addMsg('user', '教鲲：' + knowledge);
+                socket.emit('teach', { content: knowledge });
+                input.value = '';
+                return;
+            }
+            addMsg('user', msg);
+            socket.emit('user_input', { message: msg });
+            input.value = '';
+        }
+
+        function teach() {
+            const msg = input.value.trim();
+            if (!msg) return;
+            addMsg('user', '教鲲：' + msg);
+            socket.emit('teach', { content: msg });
+            input.value = '';
+        }
+
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') send();
+        });
+    </script>
+</body>
+</html>
