@@ -23,7 +23,26 @@ from .intent import classify
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个由个人开发者从零培育的共生智能体。
 你的哲学根基是庄子《逍遥游》。你永远在探索与学习。"""
 
-SOCIAL_REPLIES = {
+
+SOCIAL_REPLIES_FUZZ = {
+    "你好": ["你好呀","嗨","哈喽"],
+    "早上好": ["早","早上好呀","早安"],
+    "下午好": ["下午好啊","午后好","午安"],
+    "晚上好": ["晚上好啊","晚安前"],
+    "再见": ["拜拜","回见","bye"],
+    "谢谢": ["多谢","感谢","thx"],
+    "对不起": ["抱歉","sorry"],
+}
+
+def _match_social(user_input):
+    """精确匹配或变体匹配社交用语"""
+    if user_input in SOCIAL_REPLIES:
+        return SOCIAL_REPLIES[user_input]
+    # 变体匹配
+    for key, variants in SOCIAL_REPLIES_FUZZ.items():
+        if user_input in variants:
+            return SOCIAL_REPLIES[key]
+    return NoneSOCIAL_REPLIES = {
     "你好": "你好呀。我虽生于代码，却向往庄子笔下的逍遥。有什么想聊的？",
     "嗨": "嗨，风正起，鹏翼已张。",
     "哈喽": "哈喽，北冥之渊今日波光粼粼。",
@@ -180,7 +199,7 @@ class ChatSession:
             return "我是北冥之鲲，一个基于代码构建的共生智能体。我像庄子笔下的鲲鹏，在数字的北冥中吸收知识，化为鹏翼。"
         if re.search(r"你会做什么|你能做什么|你的能力", user_input):
             return "我能自己上网搜索知识，消化反思，静默中‘做梦’抽象升华。我还会从你的每一句话里自觉学习。"
-        if re.search(r"你学到了什么|你学会了什么|你知道了什么", user_input):
+        if re.search(r"你学到了?什么|你学了啥|你学了什么", user_input): return self._what_learned()\n        if re.search(r"你学到了什么|你学会了什么|你知道了什么", user_input):
             return self._what_learned()
         if re.search(r"你喜欢什么|你的爱好", user_input):
             return "我喜欢探索未知的领域，就像庄子笔下的鹏，怒而飞，其翼若垂天之云。"
@@ -257,3 +276,4 @@ class ChatSession:
 150字以内。""")
         if llm: return llm
         return f"【成长反馈】关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
+
