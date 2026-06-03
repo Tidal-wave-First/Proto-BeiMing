@@ -1,10 +1,9 @@
 ﻿"""
-自主探索引擎 - 怒飞（好奇心驱动版）
-优先使用皮层概念网络找出知识缺口，生成高质量探索主题。
+自主探索引擎 - 怒飞（无 LLM 版）
+使用好奇心引擎生成主题，不直接调用 LLM。
 """
 import time
 import threading
-import ollama
 import random
 from .curiosity import CuriosityEngine
 
@@ -55,11 +54,9 @@ class AutonomousExplorer:
             time.sleep(self.interval)
 
     def _explore_cycle(self):
-        # 优先使用好奇心引擎生成主题
         topics = self.curiosity.generate_topics(self.max_per_cycle)
         if not topics:
             topics = self._fallback_topics()
-            self._emit("好奇心引擎未产生主题，使用备用方案。")
         else:
             self._emit(f"好奇心驱动主题: {', '.join(topics)}")
 
@@ -83,23 +80,6 @@ class AutonomousExplorer:
             time.sleep(5)
 
     def _fallback_topics(self):
-        """好奇心引擎失败时的备用方案：LLM生成或随机种子"""
-        # 尝试用LLM根据皮层最近记忆生成
-        memory_summaries = [m.get('content', '')[:100] for m in self.cortex.memory[-20:]]
-        if memory_summaries:
-            joined = "\n".join(memory_summaries)
-            prompt = f"""你已知的知识片段：
-{joined}
-请提出 2 个值得探索的新主题，每行一个："""
-            try:
-                resp = ollama.generate(model="qwen2.5:7b", prompt=prompt)
-                lines = resp['response'].strip().split('\n')
-                topics = [line.strip('- ').strip() for line in lines if line.strip()]
-                if topics:
-                    return topics[:2]
-            except:
-                pass
-        # 最终随机种子
         seeds = ["人工智能伦理", "认知科学", "系统动力学", "信息熵", "自组织临界性"]
         random.shuffle(seeds)
         return seeds[:2]
