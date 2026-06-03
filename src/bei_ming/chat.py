@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（自觉学习版）
+对话接口 - 听风（自觉学习 + 去重排泄版）
 """
 import yaml
 import time
@@ -54,9 +54,42 @@ class ChatSession:
         except:
             return None
 
+    def _clean_text(self, text):
+        """清洗内部标签，提取人类可读的核心内容"""
+        clean = re.sub(r'\[.*?\]\s*', '', text)
+        clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
+        return clean.strip()
+
     def _is_statement(self, text):
-        """判断是否为陈述句（无问号、非搜索指令、非元问题）"""
-        return "?" not in text and "？" not in text and not text.startswith(("搜索", "查", "找", "帮我找"))
+        """判断是否为值得学习的陈述句"""
+        # 不含问号
+        if "?" in text or "？" in text:
+            return False
+        # 不以搜索指令开头
+        if any(text.startswith(p) for p in ["搜索", "查", "找", "帮我找"]):
+            return False
+        # 过滤以“你”开头且包含疑问词的（如“你想要学什么”）
+        if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧)", text):
+            return False
+        # 过滤过短的句子（如纯感叹词）
+        if len(text) < 3:
+            return False
+        return True
+
+    def _already_known(self, text):
+        """检查皮层中是否已有高度相似的内容"""
+        clean = self._clean_text(text)
+        if len(clean) < 4:
+            return True  # 太短的不存入
+        # 简单包含匹配：如果皮层已有内容包含此核心信息，则跳过
+        for mem in self.cortex.memory:
+            existing_clean = self._clean_text(mem.get('content', ''))
+            if clean in existing_clean or existing_clean in clean:
+                return True
+            # 额外：取前40字比较
+            if existing_clean[:40] == clean[:40]:
+                return True
+        return False
 
     def respond(self, user_input):
         user_input = user_input.strip()
@@ -65,7 +98,7 @@ class ChatSession:
 
         intent = classify(user_input)
 
-        # 自我元问题 —— 绝不搜索
+        # 自我元问题
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
 
@@ -93,16 +126,17 @@ class ChatSession:
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        # 皮层无记忆时，如果是陈述句 → 自觉学习
+        # 皮层无记忆，如果是陈述句 → 自觉学习（去重检查）
         if self._is_statement(user_input):
-            # 将用户陈述作为投喂存入想象空间
+            if self._already_known(user_input):
+                return "嗯，这个我已有所了解。"
+            # 存入想象空间并消化
             self.imagination.add({
                 'source_url': 'user_statement',
                 'title': '用户陈述',
                 'snippet': user_input[:100],
                 'full_text': user_input
             })
-            # 触发消化
             self.engine.digest(focus_question=user_input[:20])
             return self._statement_acknowledgment(user_input)
 
@@ -119,7 +153,6 @@ class ChatSession:
             return "我对此还一无所知，且未能从网上找到材料。请直接告诉我你知道的，我会自己学习。"
 
     def _statement_acknowledgment(self, user_input):
-        """对用户陈述的自然回应，表明已收到并学习了"""
         if len(user_input) > 30:
             return "我听到了，正在咀嚼这番话。"
         return f"嗯，'{user_input}'——我已记下，并从中学习。"
@@ -144,24 +177,24 @@ class ChatSession:
         return "我是北冥之鲲，一个正在学习中的共生智能体。你可以问我‘你是谁’、‘你会做什么’、‘你学到了什么’。"
 
     def _what_learned(self):
-        """清洗内部标签，展示可读的最近学到的知识"""
         memory = self.cortex.memory
         if len(memory) < 3:
             return "我刚苏醒，皮层里只有几条最初的认知。"
-        # 选取最近10条rule或impression，去重清洗
+        # 选取最近10条rule或impression，严格去重，精简显示
         recent = [m for m in memory if m['type'] in ('rule','impression')]
         recent.sort(key=lambda x: x.get('created_at',0), reverse=True)
         seen = set()
         clean_list = []
         for r in recent:
             raw = r['content']
-            # 清洗掉内部的标签如 [已验证]、[归纳] 等
-            clean = re.sub(r'\[.*?\]\s*', '', raw)
-            clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
-            clean = clean.strip()
-            if clean and clean not in seen:
-                seen.add(clean)
-                clean_list.append(clean)
+            clean = self._clean_text(raw)
+            if len(clean) < 4:
+                continue
+            # 截断过长的显示
+            summary = clean[:60]
+            if summary not in seen:
+                seen.add(summary)
+                clean_list.append(summary)
             if len(clean_list) >= 5:
                 break
         if not clean_list:
@@ -170,19 +203,14 @@ class ChatSession:
 
     def _smart_reply(self, user_input, memories):
         contents = [m['content'] for m in memories if 'content' in m]
-        # 尝试用LLM生成自然回答
         llm_reply = self._try_ollama(f"""{IDENTITY_PROMPT}
 用户：{user_input}
 相关知识：{'; '.join(contents[:3])}
 请用自然的语气回答：""")
         if llm_reply: return llm_reply
         if not contents: return "我还在思考这个问题，请再给我一点时间。"
-        # 无LLM时，拼接记忆片段，去掉内部标签
-        snippets = []
-        for c in contents[:3]:
-            clean = re.sub(r'\[.*?\]\s*', '', c)
-            clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
-            snippets.append(clean[:80])
+        snippets = [self._clean_text(c)[:80] for c in contents[:3] if self._clean_text(c)]
+        if not snippets: return "我还在思考这个问题，请再给我一点时间。"
         combined = "；".join(snippets[:2])
         return f"根据我目前所学，{combined}。不过我的认知还在生长，或许下次能给出更完整的回答。"
 
