@@ -1,25 +1,17 @@
 ﻿"""
-辩证引擎 - 化物（DeepSeek导师版）
+辩证引擎 - DeepSeek 高效精炼版
+每次消化产出：概念定义、关键规律、训练数据
 """
-import time
-import re
-import hashlib
-import json
-import os
-import requests
-
+import time, re, hashlib, json, os, requests
 try:
     from dotenv import load_dotenv
     load_dotenv()
-except ImportError:
+except:
     pass
 
-HAS_API = False
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-if DEEPSEEK_API_KEY:
-    HAS_API = True
-
+API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+HAS_API = bool(API_KEY)
 TRAINING_FILE = "training_data.jsonl"
 
 class DialecticEngine:
@@ -31,29 +23,106 @@ class DialecticEngine:
         self.ethics = ethics_rules or []
         self.digest_count = 0
         self.last_material_hash = None
-        self.training_lock = __import__('threading').Lock()
 
     def _call_api(self, prompt):
-        if not HAS_API:
-            return None
-        headers = {
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": DEEPSEEK_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.5,
-            "max_tokens": 400
-        }
+        if not HAS_API: return None
+        headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+        payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
         try:
-            resp = requests.post("https://api.deepseek.com/v1/chat/completions",
-                                 headers=headers, json=payload, timeout=20)
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"].strip()
-            return None
+            resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            return resp.json()["choices"][0]["message"]["content"].strip() if resp.status_code == 200 else None
         except:
             return None
+
+    def digest(self, focus_question=None):
+        if len(self.imagination) < 2: return None
+        raw = self.imagination.get_recent(10)
+        novelty = self.compute_novelty(raw)
+        if novelty < 0.3:
+            self._quick_abstract(raw)
+            return None
+
+        print(f">> 化物：精炼 {len(raw)} 条材料 (新颖度 {novelty:.2f})...")
+        self.digest_count += 1
+
+        # 构建材料文本
+        texts = []
+        for m in raw:
+            if isinstance(m, dict):
+                text = m.get('full_text', '') or m.get('snippet', '') or m.get('title', '')
+            else:
+                text = str(m)
+            if text:
+                texts.append(text[:500])
+        combined = "\n---\n".join(texts)
+
+        # 一次 API 调用，要求返回结构化知识
+        prompt = f"""你是知识提炼专家。请从以下材料中提取最核心的认知，严格按此格式返回（每一项单独一行）：
+[定义] <一句话定义>
+[规律1] <核心规律>
+[规律2] <另一条规律，若无则省略>
+[可验证] <一个可以被事实检验的判断>
+
+材料：
+{combined[:3000]}"""
+        result = self._call_api(prompt)
+        if not result:
+            # API 失败，回退统计提取
+            rules = self._statistical_extraction(raw)
+            conclusions = [(r, "统计提取") for r in rules]
+            self.imagination.clear()
+            return conclusions
+
+        # 解析 API 返回的结构化知识
+        knowledge_items = {
+            "定义": [],
+            "规律": [],
+            "可验证": []
+        }
+        for line in result.split('\n'):
+            line = line.strip()
+            if line.startswith("[定义]"): knowledge_items["定义"].append(line[4:].strip())
+            elif line.startswith("[规律1]") or line.startswith("[规律2]"): knowledge_items["规律"].append(line[5:].strip())
+            elif line.startswith("[可验证]"): knowledge_items["可验证"].append(line[5:].strip())
+
+        # 存入皮层
+        conclusions = []
+        for key, items in knowledge_items.items():
+            for item in items:
+                content = f"[{key}] {item}"
+                self.cortex.store(content=content, ktype="rule", importance=0.9 if key == "定义" else 0.8)
+                conclusions.append((item, f"API 导师提炼 ({key})"))
+                # 为每个知识项生成训练数据
+                if focus_question:
+                    self._save_training_pair(focus_question, item)
+                # 用定义和规律互相作为变体
+                if key == "定义":
+                    self._save_training_pair(f"什么是{item[:20]}", item)
+
+        self.imagination.clear()
+        return conclusions
+
+    def _save_training_pair(self, question, answer):
+        with open(TRAINING_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps({"instruction": question, "output": answer}, ensure_ascii=False) + '\n')
+
+    def _statistical_extraction(self, materials):
+        all_text = ' '.join([m.get('full_text', m.get('snippet', '')) for m in materials if isinstance(m, dict)])
+        rules = []
+        patterns = re.findall(r'([^，。；\n]{2,20})是([^，。；\n]{2,20})', all_text)
+        for a,b in patterns[:5]: rules.append(f"{a.strip()}是{b.strip()}")
+        return rules[:5]
+
+    def _quick_abstract(self, materials):
+        titles = [m.get('title','') for m in materials[:5] if isinstance(m,dict) and m.get('title')]
+        if titles:
+            self.cortex.store(content=f"[略览] {', '.join(titles[:3])}", ktype="impression", importance=0.3)
+
+    def compute_novelty(self, materials):
+        if not materials: return 0
+        sample = materials[0].get('title','') or materials[0].get('full_text','')[:50]
+        existing = self.cortex.retrieve(sample, top_k=3)
+        return 1.0 if not existing else max(0.1, 1.0 - len(existing)*0.3)
 
     def has_fresh_material(self):
         if len(self.imagination) < 1: return False
@@ -63,102 +132,3 @@ class DialecticEngine:
             self.last_material_hash = h
             return True
         return False
-
-    def compute_novelty(self, materials):
-        if not materials: return 0
-        sample = materials[0].get('title', '') or materials[0].get('full_text', '')[:50]
-        existing = self.cortex.retrieve(sample, top_k=3)
-        if not existing: return 1.0
-        return max(0.1, 1.0 - len(existing) * 0.3)
-
-    def digest(self, focus_question=None):
-        if len(self.imagination) < 2: return None
-        raw = self.imagination.get_recent(10)
-        novelty = self.compute_novelty(raw)
-        if novelty < 0.3:
-            self._quick_abstract(raw)
-            return None
-        print(f">> 化物：深度咀嚼 {len(raw)} 条材料 (新颖度 {novelty:.2f})...")
-        self.digest_count += 1
-
-        # 用API提取多条规律，同时生成训练样本
-        extracted = self._extract_rules_with_api(raw, focus_question)
-        if not extracted:
-            extracted = self._statistical_extraction(raw)
-
-        conclusions = []
-        for rule in extracted:
-            # rule 格式: "规律内容|变体1|变体2"
-            parts = rule.split('|')
-            core_rule = parts[0].strip()
-            # 存入皮层
-            self.cortex.store(
-                content=f"[API导师] {core_rule}",
-                ktype="rule",
-                importance=0.8
-            )
-            # 保存训练样本：以核心规律为知识，生成问答对
-            if focus_question:
-                self._save_training_pair(focus_question, core_rule)
-            # 也保存所有变体
-            for variant in parts[1:]:
-                self._save_training_pair(variant.strip(), core_rule)
-            conclusions.append((core_rule, "来自API导师"))
-
-        self.imagination.clear()
-        return conclusions
-
-    def _extract_rules_with_api(self, materials, focus=None):
-        """用DeepSeek从材料中提取规律，返回格式: 规律1|同义表述1|同义表述2"""
-        summaries = []
-        for m in materials[:8]:
-            if isinstance(m, dict):
-                text = m.get('full_text', '') or m.get('snippet', '') or m.get('title', '')
-            else:
-                text = str(m)
-            summaries.append(text[:500])
-        joined = "\n---\n".join(summaries)
-        prompt = f"""你是认知科学家。请从以下材料中提炼2条最重要的规律。
-每条规律用以下格式输出（用竖线分隔同义表述）：
-规律句子|同一个规律的不同说法|再一种说法
-例如：熵是系统混乱度的度量|熵衡量系统的无序程度|熵越大系统越混乱
-
-材料：
-{joined[:3000]}
-
-直接输出规律，每条一行，不要编号。"""
-        result = self._call_api(prompt)
-        if not result:
-            return None
-        lines = [line.strip() for line in result.split('\n') if '|' in line]
-        return lines[:3]
-
-    def _statistical_extraction(self, materials):
-        all_text = ' '.join([m.get('full_text', m.get('snippet', '')) for m in materials if isinstance(m, dict)])
-        rules = []
-        patterns = re.findall(r'([^，。；\n]{2,20})是([^，。；\n]{2,20})', all_text)
-        for a, b in patterns[:5]:
-            rules.append(f"{a.strip()}是{b.strip()}")
-        words = re.findall(r'[\u4e00-\u9fff]{2,4}', all_text)
-        freq = {}
-        for w in words: freq[w] = freq.get(w, 0) + 1
-        top = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:5]
-        for w, c in top:
-            if c >= 2: rules.append(f"{w} (出现{c}次)")
-        return rules[:5]
-
-    def _save_training_pair(self, question, answer):
-        """保存一个问答对到训练数据文件"""
-        with self.training_lock:
-            with open(TRAINING_FILE, 'a', encoding='utf-8') as f:
-                pair = {"instruction": question, "output": answer}
-                f.write(json.dumps(pair, ensure_ascii=False) + '\n')
-
-    def _quick_abstract(self, materials):
-        titles = [m.get('title', '') for m in materials[:5] if isinstance(m, dict) and m.get('title')]
-        if titles:
-            self.cortex.store(
-                content=f"[略览] 相关主题: {', '.join(titles[:3])}",
-                ktype="impression",
-                importance=0.3
-            )
