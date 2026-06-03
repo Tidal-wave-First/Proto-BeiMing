@@ -1,4 +1,4 @@
-﻿"""
+"""
 Proto-BeiMing 通用入口
 用法：
   python main.py           (Web 界面 + 后台核心)
@@ -128,7 +128,7 @@ def main():
             time.sleep(10)
     else:
         print(">> Web 模式，请访问 http://127.0.0.1:5000")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+        socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
 
 if __name__ == '__main__':
     main()
