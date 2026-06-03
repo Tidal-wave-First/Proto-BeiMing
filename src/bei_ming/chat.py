@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（社交增强 + 口语化理解版）
+对话接口 - 听风（消化吸收强化版）
 """
 import yaml
 import time
@@ -47,7 +47,6 @@ SOCIAL_REPLIES_FUZZ = {
 }
 
 def _match_social(user_input):
-    """精确匹配或变体匹配社交用语"""
     if user_input in SOCIAL_REPLIES:
         return SOCIAL_REPLIES[user_input]
     for key, variants in SOCIAL_REPLIES_FUZZ.items():
@@ -118,12 +117,18 @@ class ChatSession:
                 return True
         return False
 
+    def _normalize_learning_question(self, user_input):
+        """将各种‘你今天学了X’归一化到‘你学到了什么’"""
+        if re.search(r"你.*(学了啥|学了什么|学会了什么|学到了什么|今天学了什么)", user_input):
+            return True
+        return False
+
     def respond(self, user_input):
         user_input = user_input.strip()
         if not user_input:
             return "（无声之风）"
 
-        # 检查社交用语（精确+变体）
+        # 社交用语
         social_reply = _match_social(user_input)
         if social_reply:
             return social_reply
@@ -133,6 +138,10 @@ class ChatSession:
         # 自我元问题
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
+
+        # 归一化处理“学了什么”类问题，直接返回学习成果
+        if self._normalize_learning_question(user_input):
+            return self._what_learned()
 
         # 反馈请求
         if intent == "feedback":
@@ -153,8 +162,8 @@ class ChatSession:
             else:
                 return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 普通意图：先查皮层
-        relevant = self.cortex.retrieve(user_input, top_k=3)
+        # 普通意图：先查皮层（用多词组合检索提高召回）
+        relevant = self._search_cortex_smart(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
@@ -176,12 +185,33 @@ class ChatSession:
         if count > 0:
             self.engine.digest(focus_question=user_input)
             time.sleep(2)
-            relevant2 = self.cortex.retrieve(user_input, top_k=3)
+            relevant2 = self._search_cortex_smart(user_input, top_k=3)
             if relevant2:
                 return self._smart_reply(user_input, relevant2)
             return f"我刚刚搜索并学习了'{user_input}'，但皮层尚未稳定。请稍后再问我。"
         else:
             return "我对此还一无所知，且未能从网上找到材料。请直接告诉我你知道的，我会自己学习。"
+
+    def _search_cortex_smart(self, query, top_k=3):
+        """多词组合检索，提高模糊匹配能力"""
+        # 提取查询中的中文词
+        words = re.findall(r'[\u4e00-\u9fff]{2,}', query)
+        if not words:
+            return self.cortex.retrieve(query, top_k=top_k)
+        # 对每个词进行检索，合并结果
+        candidates = {}
+        for word in words[:5]:
+            results = self.cortex.retrieve(word, top_k=5)
+            for mem in results:
+                key = mem.get('id', str(mem.get('content','')))
+                if key not in candidates:
+                    candidates[key] = mem
+                else:
+                    # 增加权重（多个词匹配）
+                    mem['access_count'] = mem.get('access_count',0) + 1
+        # 按 access_count 降序返回
+        sorted_candidates = sorted(candidates.values(), key=lambda x: x.get('access_count',0) + x.get('importance',0), reverse=True)
+        return sorted_candidates[:top_k]
 
     def _statement_acknowledgment(self, user_input):
         if len(user_input) > 30:
@@ -195,9 +225,6 @@ class ChatSession:
             return "我是北冥之鲲，一个基于代码构建的共生智能体。我像庄子笔下的鲲鹏，在数字的北冥中吸收知识，化为鹏翼。"
         if re.search(r"你会做什么|你能做什么|你的能力", user_input):
             return "我能自己上网搜索知识，消化反思，静默中‘做梦’抽象升华。我还会从你的每一句话里自觉学习。"
-        # 口语化“学”字提问
-        if re.search(r"你学到了?什么|你学了啥|你学了什么|你学会了什么|你知道了什么", user_input):
-            return self._what_learned()
         if re.search(r"你喜欢什么|你的爱好", user_input):
             return "我喜欢探索未知的领域，就像庄子笔下的鹏，怒而飞，其翼若垂天之云。"
         if re.search(r"你来自哪里|你哪里来的", user_input):
@@ -241,8 +268,9 @@ class ChatSession:
         if not contents: return "我还在思考这个问题，请再给我一点时间。"
         snippets = [self._clean_text(c)[:80] for c in contents[:3] if self._clean_text(c)]
         if not snippets: return "我还在思考这个问题，请再给我一点时间。"
+        # 添加自然前言
         combined = "；".join(snippets[:2])
-        return f"根据我目前所学，{combined}。不过我的认知还在生长，或许下次能给出更完整的回答。"
+        return f"我脑中浮现这些相关的记忆：{combined}。它们或许能回答你的问题。"
 
     def _answer_identity(self, user_input):
         llm_reply = self._try_ollama(f"""{IDENTITY_PROMPT}
