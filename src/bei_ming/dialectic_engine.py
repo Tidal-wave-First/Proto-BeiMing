@@ -1,17 +1,26 @@
 ﻿"""
-辩证引擎 - 无 LLM 回退版
+辩证引擎 - 化物（DeepSeek导师版）
 """
 import time
 import re
 import hashlib
-from collections import defaultdict
-from itertools import combinations
+import json
+import os
+import requests
 
 try:
-    import ollama
-    HAS_OLLAMA = True
+    from dotenv import load_dotenv
+    load_dotenv()
 except ImportError:
-    HAS_OLLAMA = False
+    pass
+
+HAS_API = False
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+if DEEPSEEK_API_KEY:
+    HAS_API = True
+
+TRAINING_FILE = "training_data.jsonl"
 
 class DialecticEngine:
     def __init__(self, imagination, cortex, laboratory, model="qwen2.5:7b", ethics_rules=None):
@@ -22,6 +31,29 @@ class DialecticEngine:
         self.ethics = ethics_rules or []
         self.digest_count = 0
         self.last_material_hash = None
+        self.training_lock = __import__('threading').Lock()
+
+    def _call_api(self, prompt):
+        if not HAS_API:
+            return None
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": DEEPSEEK_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.5,
+            "max_tokens": 400
+        }
+        try:
+            resp = requests.post("https://api.deepseek.com/v1/chat/completions",
+                                 headers=headers, json=payload, timeout=20)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"].strip()
+            return None
+        except:
+            return None
 
     def has_fresh_material(self):
         if len(self.imagination) < 1: return False
@@ -48,40 +80,58 @@ class DialecticEngine:
             return None
         print(f">> 化物：深度咀嚼 {len(raw)} 条材料 (新颖度 {novelty:.2f})...")
         self.digest_count += 1
-        hypotheses = self._generate_hypotheses(raw, focus_question)
-        if not hypotheses:
-            hypotheses = self._statistical_extraction(raw)
+
+        # 用API提取多条规律，同时生成训练样本
+        extracted = self._extract_rules_with_api(raw, focus_question)
+        if not extracted:
+            extracted = self._statistical_extraction(raw)
+
         conclusions = []
-        for hyp in hypotheses:
-            result = self.laboratory.run_thought_experiment(hyp, raw)
-            self._synthesize(hyp, result)
-            conclusions.append((hyp, result))
-        if conclusions:
-            self._self_reflect(conclusions, raw)
-        self._induce_principles()
+        for rule in extracted:
+            # rule 格式: "规律内容|变体1|变体2"
+            parts = rule.split('|')
+            core_rule = parts[0].strip()
+            # 存入皮层
+            self.cortex.store(
+                content=f"[API导师] {core_rule}",
+                ktype="rule",
+                importance=0.8
+            )
+            # 保存训练样本：以核心规律为知识，生成问答对
+            if focus_question:
+                self._save_training_pair(focus_question, core_rule)
+            # 也保存所有变体
+            for variant in parts[1:]:
+                self._save_training_pair(variant.strip(), core_rule)
+            conclusions.append((core_rule, "来自API导师"))
+
         self.imagination.clear()
         return conclusions
 
-    def _material_summary(self, materials, max_len=2000):
-        parts = []
-        for m in materials[:5]:
+    def _extract_rules_with_api(self, materials, focus=None):
+        """用DeepSeek从材料中提取规律，返回格式: 规律1|同义表述1|同义表述2"""
+        summaries = []
+        for m in materials[:8]:
             if isinstance(m, dict):
                 text = m.get('full_text', '') or m.get('snippet', '') or m.get('title', '')
             else:
                 text = str(m)
-            parts.append(text[:500])
-        return "\n".join(parts)[:max_len]
+            summaries.append(text[:500])
+        joined = "\n---\n".join(summaries)
+        prompt = f"""你是认知科学家。请从以下材料中提炼2条最重要的规律。
+每条规律用以下格式输出（用竖线分隔同义表述）：
+规律句子|同一个规律的不同说法|再一种说法
+例如：熵是系统混乱度的度量|熵衡量系统的无序程度|熵越大系统越混乱
 
-    def _generate_hypotheses(self, materials, focus=None):
-        if not HAS_OLLAMA:
-            return self._statistical_extraction(materials)
-        prompt = self._build_hypothesis_prompt(materials, focus)
-        try:
-            resp = ollama.generate(model=self.model, prompt=prompt)
-            lines = resp['response'].strip().split('\n')
-            return [line.strip('- ').strip() for line in lines if line.strip()][:5]
-        except:
-            return self._statistical_extraction(materials)
+材料：
+{joined[:3000]}
+
+直接输出规律，每条一行，不要编号。"""
+        result = self._call_api(prompt)
+        if not result:
+            return None
+        lines = [line.strip() for line in result.split('\n') if '|' in line]
+        return lines[:3]
 
     def _statistical_extraction(self, materials):
         all_text = ' '.join([m.get('full_text', m.get('snippet', '')) for m in materials if isinstance(m, dict)])
@@ -94,94 +144,21 @@ class DialecticEngine:
         for w in words: freq[w] = freq.get(w, 0) + 1
         top = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:5]
         for w, c in top:
-            if c >= 2: rules.append(f"高频概念：{w} (出现{c}次)")
+            if c >= 2: rules.append(f"{w} (出现{c}次)")
         return rules[:5]
 
-    def _build_hypothesis_prompt(self, materials, focus):
-        summary = self._material_summary(materials)
-        focus_line = f"请特别关注这个问题：{focus}\n" if focus else ""
-        return f"""你是认知科学家。阅读材料，提出3个可验证的规律。
-{focus_line}
-材料：
-{summary}
-输出每条一行："""
+    def _save_training_pair(self, question, answer):
+        """保存一个问答对到训练数据文件"""
+        with self.training_lock:
+            with open(TRAINING_FILE, 'a', encoding='utf-8') as f:
+                pair = {"instruction": question, "output": answer}
+                f.write(json.dumps(pair, ensure_ascii=False) + '\n')
 
     def _quick_abstract(self, materials):
         titles = [m.get('title', '') for m in materials[:5] if isinstance(m, dict) and m.get('title')]
         if titles:
-            self.cortex.store(content=f"[略览] 相关主题: {', '.join(titles[:3])}", ktype="impression", importance=0.3)
-
-    def _synthesize(self, hypothesis, result):
-        old = self.cortex.retrieve(hypothesis, top_k=2)
-        if old:
-            self._dialectical_sublation(hypothesis, result, old)
-        else:
-            self.cortex.store(content=f"[已验证] {hypothesis} (结论: {result})", ktype="rule", importance=0.6)
-
-    def _dialectical_sublation(self, new_hyp, new_res, old_entries):
-        old_text = "; ".join([e.get('content', '') for e in old_entries])
-        if not HAS_OLLAMA:
-            merged = f"{old_text}; {new_hyp} → {new_res}"
-            self.cortex.store(content=f"[合并规律] {merged}", ktype="rule", importance=0.7)
-            for old in old_entries: old['importance'] *= 0.5
-            self.cortex._save()
-            return
-        try:
-            prompt = f"""你是辩证哲学家。融合新旧知识，给出更高抽象。
-旧知: {old_text}
-新假设: {new_hyp}
-验证结果: {new_res}
-请输出一句融合后的规律："""
-            resp = ollama.generate(model=self.model, prompt=prompt)
-            synth = resp['response'].strip()
-            self.cortex.store(content=f"[辩证规律] {synth}", ktype="rule", importance=0.9)
-            for old in old_entries: old['importance'] *= 0.5
-            self.cortex._save()
-        except:
-            merged = f"{old_text}; {new_hyp} → {new_res}"
-            self.cortex.store(content=f"[合并规律] {merged}", ktype="rule", importance=0.7)
-
-    def _self_reflect(self, conclusions, materials):
-        if not conclusions: return
-        material_text = self._material_summary(materials, 1000)
-        for hyp, res in conclusions:
-            if "不成立" in res or "待验证" in res:
-                self.cortex.store(content=f"[待验证] {hyp} (当前结论: {res})", ktype="history", importance=0.5)
-            if not HAS_OLLAMA:
-                continue
-            try:
-                prompt = f"""你是严格的逻辑审查员。针对以下结论，提出1个可能的反驳或例外情况。
-结论：{hyp}（验证结果：{res}）
-基于材料：{material_text}
-请直接列出反驳点："""
-                resp = ollama.generate(model=self.model, prompt=prompt)
-                critiques = resp['response'].strip()
-                if critiques and "无" not in critiques and "没有" not in critiques:
-                    self.cortex.store(content=f"[反思] 对 '{hyp[:30]}...' 的反驳: {critiques}", ktype="history", importance=0.7)
-                    for mem in self.cortex.memory:
-                        if hyp[:20] in mem.get('content', ''): mem['importance'] *= 0.8
-                    self.cortex._save()
-            except:
-                pass
-
-    def _induce_principles(self):
-        rules = [m for m in self.cortex.memory if m.get('type') == 'rule']
-        if len(rules) < 3: return
-        recent = sorted(rules, key=lambda x: x.get('last_accessed', 0), reverse=True)[:3]
-        contents = "; ".join([r.get('content', '') for r in recent])
-        if not HAS_OLLAMA:
-            combined = " + ".join([r.get('content', '')[:50] for r in recent])
-            self.cortex.store(content=f"[归纳] {combined}", ktype="rule", importance=0.6)
-            return
-        try:
-            prompt = f"""将以下规律归纳为一句通用原则：
-规律：{contents}
-请用一句话表述："""
-            resp = ollama.generate(model=self.model, prompt=prompt)
-            principle = resp['response'].strip()
-            if principle:
-                self.cortex.store(content=f"[高层原则] {principle}", ktype="rule", importance=0.95)
-                print(f">> 抽象升华：{principle}")
-        except:
-            combined = " + ".join([r.get('content', '')[:50] for r in recent])
-            self.cortex.store(content=f"[归纳] {combined}", ktype="rule", importance=0.6)
+            self.cortex.store(
+                content=f"[略览] 相关主题: {', '.join(titles[:3])}",
+                ktype="impression",
+                importance=0.3
+            )

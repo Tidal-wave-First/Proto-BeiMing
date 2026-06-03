@@ -1,0 +1,9 @@
+﻿flask
+flask-socketio
+ddgs
+pyyaml
+requests
+beautifulsoup4
+lxml
+eventlet
+python-dotenv
