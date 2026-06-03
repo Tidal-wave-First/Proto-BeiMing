@@ -1,6 +1,17 @@
-﻿import time, ollama, re, hashlib, random
+﻿"""
+辩证引擎 - 无 LLM 回退版
+"""
+import time
+import re
+import hashlib
 from collections import defaultdict
 from itertools import combinations
+
+try:
+    import ollama
+    HAS_OLLAMA = True
+except ImportError:
+    HAS_OLLAMA = False
 
 class DialecticEngine:
     def __init__(self, imagination, cortex, laboratory, model="qwen2.5:7b", ethics_rules=None):
@@ -62,13 +73,15 @@ class DialecticEngine:
         return "\n".join(parts)[:max_len]
 
     def _generate_hypotheses(self, materials, focus=None):
+        if not HAS_OLLAMA:
+            return self._statistical_extraction(materials)
         prompt = self._build_hypothesis_prompt(materials, focus)
         try:
             resp = ollama.generate(model=self.model, prompt=prompt)
             lines = resp['response'].strip().split('\n')
             return [line.strip('- ').strip() for line in lines if line.strip()][:5]
         except:
-            return []
+            return self._statistical_extraction(materials)
 
     def _statistical_extraction(self, materials):
         all_text = ' '.join([m.get('full_text', m.get('snippet', '')) for m in materials if isinstance(m, dict)])
@@ -107,6 +120,12 @@ class DialecticEngine:
 
     def _dialectical_sublation(self, new_hyp, new_res, old_entries):
         old_text = "; ".join([e.get('content', '') for e in old_entries])
+        if not HAS_OLLAMA:
+            merged = f"{old_text}; {new_hyp} → {new_res}"
+            self.cortex.store(content=f"[合并规律] {merged}", ktype="rule", importance=0.7)
+            for old in old_entries: old['importance'] *= 0.5
+            self.cortex._save()
+            return
         try:
             prompt = f"""你是辩证哲学家。融合新旧知识，给出更高抽象。
 旧知: {old_text}
@@ -128,6 +147,8 @@ class DialecticEngine:
         for hyp, res in conclusions:
             if "不成立" in res or "待验证" in res:
                 self.cortex.store(content=f"[待验证] {hyp} (当前结论: {res})", ktype="history", importance=0.5)
+            if not HAS_OLLAMA:
+                continue
             try:
                 prompt = f"""你是严格的逻辑审查员。针对以下结论，提出1个可能的反驳或例外情况。
 结论：{hyp}（验证结果：{res}）
@@ -148,6 +169,10 @@ class DialecticEngine:
         if len(rules) < 3: return
         recent = sorted(rules, key=lambda x: x.get('last_accessed', 0), reverse=True)[:3]
         contents = "; ".join([r.get('content', '') for r in recent])
+        if not HAS_OLLAMA:
+            combined = " + ".join([r.get('content', '')[:50] for r in recent])
+            self.cortex.store(content=f"[归纳] {combined}", ktype="rule", importance=0.6)
+            return
         try:
             prompt = f"""将以下规律归纳为一句通用原则：
 规律：{contents}

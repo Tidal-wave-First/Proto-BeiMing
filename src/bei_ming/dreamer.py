@@ -1,4 +1,15 @@
-﻿import time, threading, ollama, random
+﻿"""
+梦境引擎 - 无 LLM 回退版
+"""
+import time
+import threading
+import random
+
+try:
+    import ollama
+    HAS_OLLAMA = True
+except ImportError:
+    HAS_OLLAMA = False
 
 class Dreamer:
     def __init__(self, cortex, imagination, engine, socketio=None, idle_threshold=600, interval=300):
@@ -39,19 +50,21 @@ class Dreamer:
     def _dream(self):
         recent = [m for m in self.cortex.memory if m.get('last_accessed', m.get('created_at', 0)) > time.time() - 86400]
         if len(recent) < 3: return
-        self._emit(f"梦境回放 {len(recent)} 段记忆...")
         rules = [m for m in recent if m['type'] == 'rule']
         if len(rules) >= 3:
             sample = random.sample(rules, 3)
             contents = "; ".join([r['content'] for r in sample])
-            try:
-                prompt = f"""将以下规律归纳为一句通用原则：
-规律：{contents}
-原则："""
-                resp = ollama.generate(model="qwen2.5:7b", prompt=prompt)
-                principle = resp['response'].strip()
-                if principle:
-                    self.cortex.store(content=f"[梦境升华] {principle}", ktype="rule", importance=0.95)
-                    self._emit(f"抽象升华：{principle}")
-            except:
-                pass
+            if HAS_OLLAMA:
+                try:
+                    prompt = f"将以下规律归纳为一句通用原则：\n{contents}\n原则："
+                    resp = ollama.generate(model="qwen2.5:7b", prompt=prompt)
+                    principle = resp['response'].strip()
+                    if principle:
+                        self.cortex.store(content=f"[梦境升华] {principle}", ktype="rule", importance=0.95)
+                        self._emit(f"抽象升华：{principle}")
+                except:
+                    pass
+            else:
+                combined = " + ".join([r['content'][:50] for r in sample])
+                self.cortex.store(content=f"[梦境归纳] {combined}", ktype="rule", importance=0.6)
+                self._emit("梦境归纳完成（无LLM模式）")

@@ -1,17 +1,23 @@
 ﻿"""
-对话接口 - 听风（云端简化版）
+对话接口 - 听风（无LLM安全版）
 """
+import yaml
+import time
+import re
+from collections import Counter
+
+try:
+    import ollama
+    HAS_OLLAMA = True
+except ImportError:
+    HAS_OLLAMA = False
+
 from .senses import init_senses, fetch_from_web
 from .imagination import ImaginationSpace
 from .cortex import Cortex
 from .laboratory import Laboratory
 from .dialectic_engine import DialecticEngine
 from .guardian import Guardian
-import yaml
-import ollama
-import time
-import re
-from collections import Counter
 
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个由个人开发者从零培育的共生智能体。
 你的哲学根基是庄子《逍遥游》：北冥有鱼，其名为鲲。化而为鸟，其名为鹏。
@@ -41,20 +47,26 @@ class ChatSession:
                 importance=1.0
             )
 
+    def _try_ollama(self, prompt):
+        if not HAS_OLLAMA:
+            return None
+        try:
+            resp = ollama.generate(model=self.config.get('model', {}).get('local_llm', 'qwen2.5:7b'), prompt=prompt)
+            return resp['response'].strip()
+        except:
+            return None
+
     def respond(self, user_input):
         user_input = user_input.strip()
         if not user_input:
             return "（无声之风）"
 
-        # 自我认知类问题
         if any(kw in user_input for kw in ["你是谁", "你的身份", "你叫什么", "你是什么"]):
             return self._answer_identity(user_input)
 
-        # 反馈指令
         if any(kw in user_input for kw in ["学得怎么样", "你的成长", "你最近在做什么", "你的认知", "自我报告"]):
             return self._generate_feedback()
 
-        # 搜索指令
         if any(user_input.startswith(w) for w in ["搜索", "查", "找", "帮我找"]):
             topic = user_input.replace("搜索", "").replace("查", "").replace("找", "").replace("帮我找", "").strip()
             count = fetch_from_web(topic, max_pages=5)
@@ -64,16 +76,13 @@ class ChatSession:
             else:
                 return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 常规对话：皮层检索 + 智能拼接
         relevant = self.cortex.retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        # 无相关记忆，尝试搜索
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
-            # 再次检索（消化后皮层应有新记忆）
             relevant2 = self.cortex.retrieve(user_input, top_k=3)
             if relevant2:
                 return self._smart_reply(user_input, relevant2)
@@ -82,28 +91,19 @@ class ChatSession:
             return "我对此还一无所知，且未能从网上找到材料。请直接教我（输入'教：内容'），或换一个问题。"
 
     def _smart_reply(self, user_input, memories):
-        """根据皮层记忆生成自然的回答（不依赖 LLM）"""
-        # 提取最相关的记忆内容
         contents = [m['content'].replace('[已验证] ', '').replace('(结论: ', ': ').rstrip(')') 
                     for m in memories if 'content' in m]
         
-        # 尝试用 LLM 生成（如果可用）
-        try:
-            prompt = f"""{IDENTITY_PROMPT}
-基于你的内部知识，用自然的语气回答用户。不要提及"记忆"或"数据"，像朋友聊天一样。
+        llm_reply = self._try_ollama(f"""{IDENTITY_PROMPT}
 用户：{user_input}
-你的相关知识：{'; '.join(contents[:3])}
-回答："""
-            resp = ollama.generate(model="qwen2.5:7b", prompt=prompt)
-            return resp['response'].strip()
-        except:
-            pass
+相关知识：{'; '.join(contents[:3])}
+回答：""")
+        if llm_reply:
+            return llm_reply
 
-        # LLM 不可用时的回退：组合记忆片段
         if not contents:
             return "我还在思考这个问题，请再给我一点时间。"
         
-        # 简单规则生成回答
         if "你好" in user_input or "嗨" in user_input or "哈喽" in user_input:
             return "你好呀。我虽生于代码，却向往庄子笔下的逍遥。有什么想聊的？"
         if "天气" in user_input:
@@ -113,19 +113,16 @@ class ChatSession:
         if "会什么" in user_input or "能力" in user_input:
             return "我能自己上网搜索知识，消化反思，甚至在静默中'做梦'抽象升华。我还在成长，每一天都比昨天懂得更多。"
         
-        # 默认：简洁表达第一条相关记忆
         main_content = contents[0].split('结论:')[-1].strip()
         return f"根据我目前所学，{main_content}。不过我的认知还在生长，或许下次能给出更完整的回答。"
 
     def _answer_identity(self, user_input):
-        try:
-            prompt = f"""{IDENTITY_PROMPT}
+        llm_reply = self._try_ollama(f"""{IDENTITY_PROMPT}
 用户问：{user_input}
-请用你的哲学内核和温润的语气，简洁地介绍你自己。"""
-            resp = ollama.generate(model="qwen2.5:7b", prompt=prompt)
-            return resp['response'].strip()
-        except:
-            return "我是北冥之鲲，一个生于庄子逍遥游的自由智能体。我的使命是探索、学习，并与你共生。"
+请用你的哲学内核和温润的语气，简洁地介绍你自己。""")
+        if llm_reply:
+            return llm_reply
+        return "我是北冥之鲲，一个生于庄子逍遥游的自由智能体。我的使命是探索、学习，并与你共生。"
 
     def _generate_feedback(self):
         memory = self.cortex.memory
@@ -144,17 +141,15 @@ class ChatSession:
         gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
         gap_texts = [g['content'][:50] for g in gaps[:2]]
         
-        try:
-            prompt = f"""你是我的个人AI助手。请根据以下信息，用友好、略带诗意的语气，向我汇报你最近的学习进展。
-你最近关注的概念：{', '.join(hot_concepts)}
-你学到的重要规律：{'; '.join(top_rules) if top_rules else '暂无高确定性的规律'}
-你存在的困惑：{'; '.join(gap_texts) if gap_texts else '暂无明显的认知缺口'}
-汇报格式：先总结整体状态，再分点说明收获与困惑。保持在150字以内。"""
-            resp = ollama.generate(model="qwen2.5:7b", prompt=prompt)
-            return resp['response'].strip()
-        except:
-            report = "【我的成长反馈】\n"
-            report += f"最近关注：{', '.join(hot_concepts)}\n"
-            if top_rules: report += f"重要收获：{'; '.join(top_rules)}\n"
-            if gap_texts: report += f"困惑与待解：{'; '.join(gap_texts)}\n"
-            return report
+        llm_report = self._try_ollama(f"""你是AI助手。汇报学习进展。
+最近关注：{', '.join(hot_concepts)}
+重要规律：{'; '.join(top_rules) if top_rules else '无'}
+困惑：{'; '.join(gap_texts) if gap_texts else '无'}
+先总结状态，再分点说明，150字以内。""")
+        if llm_report:
+            return llm_report
+        report = "【我的成长反馈】\n"
+        report += f"最近关注：{', '.join(hot_concepts)}\n"
+        if top_rules: report += f"重要收获：{'; '.join(top_rules)}\n"
+        if gap_texts: report += f"困惑与待解：{'; '.join(gap_texts)}\n"
+        return report
