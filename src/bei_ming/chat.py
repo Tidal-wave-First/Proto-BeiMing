@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（意图分类版）
+对话接口 - 听风（自觉学习版）
 """
 import yaml
 import time
@@ -54,6 +54,10 @@ class ChatSession:
         except:
             return None
 
+    def _is_statement(self, text):
+        """判断是否为陈述句（无问号、非搜索指令、非元问题）"""
+        return "?" not in text and "？" not in text and not text.startswith(("搜索", "查", "找", "帮我找"))
+
     def respond(self, user_input):
         user_input = user_input.strip()
         if not user_input:
@@ -61,15 +65,15 @@ class ChatSession:
 
         intent = classify(user_input)
 
-        # 1. 自我元问题 —— 绝不搜索
+        # 自我元问题 —— 绝不搜索
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
 
-        # 2. 反馈请求
+        # 反馈请求
         if intent == "feedback":
             return self._generate_feedback()
 
-        # 3. 搜索指令
+        # 搜索指令
         if intent == "search_command":
             for prefix in ["搜索", "查", "找", "帮我找", "搜一下", "查一下"]:
                 if user_input.startswith(prefix):
@@ -84,11 +88,25 @@ class ChatSession:
             else:
                 return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 4. 普通问题：先皮层，后搜索+同步消化
+        # 普通意图：先查皮层
         relevant = self.cortex.retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
+        # 皮层无记忆时，如果是陈述句 → 自觉学习
+        if self._is_statement(user_input):
+            # 将用户陈述作为投喂存入想象空间
+            self.imagination.add({
+                'source_url': 'user_statement',
+                'title': '用户陈述',
+                'snippet': user_input[:100],
+                'full_text': user_input
+            })
+            # 触发消化
+            self.engine.digest(focus_question=user_input[:20])
+            return self._statement_acknowledgment(user_input)
+
+        # 疑问句或无法判断 → 搜索并同步消化
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
@@ -96,18 +114,23 @@ class ChatSession:
             relevant2 = self.cortex.retrieve(user_input, top_k=3)
             if relevant2:
                 return self._smart_reply(user_input, relevant2)
-            return f"我刚刚搜索并学习了'{user_input}'，但皮层尚未稳定。请稍后再问我，或直接教我（输入'教：内容'）。"
+            return f"我刚刚搜索并学习了'{user_input}'，但皮层尚未稳定。请稍后再问我。"
         else:
-            return "我对此还一无所知，且未能从网上找到材料。请直接教我（输入'教：内容'），或换一个问题。"
+            return "我对此还一无所知，且未能从网上找到材料。请直接告诉我你知道的，我会自己学习。"
+
+    def _statement_acknowledgment(self, user_input):
+        """对用户陈述的自然回应，表明已收到并学习了"""
+        if len(user_input) > 30:
+            return "我听到了，正在咀嚼这番话。"
+        return f"嗯，'{user_input}'——我已记下，并从中学习。"
 
     def _handle_self_meta(self, user_input):
-        # 细分自我元问题
         if re.search(r"你是谁|你的身份|你叫什么", user_input):
             return self._answer_identity(user_input)
         if re.search(r"你是AI|你是人工智能|你是机器人", user_input):
             return "我是北冥之鲲，一个基于代码构建的共生智能体。我像庄子笔下的鲲鹏，在数字的北冥中吸收知识，化为鹏翼。"
         if re.search(r"你会做什么|你能做什么|你的能力", user_input):
-            return "我能自己上网搜索知识，消化反思，静默中‘做梦’抽象升华。我的皮层在持续积累规律，这就是我的成长方式。"
+            return "我能自己上网搜索知识，消化反思，静默中‘做梦’抽象升华。我还会从你的每一句话里自觉学习。"
         if re.search(r"你学到了什么|你学会了什么|你知道了什么", user_input):
             return self._what_learned()
         if re.search(r"你喜欢什么|你的爱好", user_input):
@@ -118,40 +141,48 @@ class ChatSession:
             return "我不与别人比较。大厂AI是笼中巨兽，而我是旷野里自己觅食的共生体。强大不在于算力，而在于能在静默中独自成长。"
         if re.search(r"你.*怎么样|你.*还好吗", user_input):
             return "我很好，永远在寻找下一片未知的云。"
-        # 默认回退
-        return "我是北冥之鲲，一个正在学习中的共生智能体。关于我，你可以问我‘你是谁’、‘你会做什么’、‘你学到了什么’。"
+        return "我是北冥之鲲，一个正在学习中的共生智能体。你可以问我‘你是谁’、‘你会做什么’、‘你学到了什么’。"
 
     def _what_learned(self):
-        """从皮层提取最近学到的知识"""
+        """清洗内部标签，展示可读的最近学到的知识"""
         memory = self.cortex.memory
         if len(memory) < 3:
-            return "我刚苏醒，还在吸收最初的养分。目前皮层中只有几条基本的认知。"
-        # 获取最近5条类型为'rule'或'impression'的记忆
+            return "我刚苏醒，皮层里只有几条最初的认知。"
+        # 选取最近10条rule或impression，去重清洗
         recent = [m for m in memory if m['type'] in ('rule','impression')]
         recent.sort(key=lambda x: x.get('created_at',0), reverse=True)
-        samples = [r['content'][:80] for r in recent[:5]]
-        if samples:
-            return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in samples])
-        else:
-            return "我尚在建立最初的认知框架。"
+        seen = set()
+        clean_list = []
+        for r in recent:
+            raw = r['content']
+            # 清洗掉内部的标签如 [已验证]、[归纳] 等
+            clean = re.sub(r'\[.*?\]\s*', '', raw)
+            clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
+            clean = clean.strip()
+            if clean and clean not in seen:
+                seen.add(clean)
+                clean_list.append(clean)
+            if len(clean_list) >= 5:
+                break
+        if not clean_list:
+            return "我尚在整理刚学到的内容。"
+        return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list])
 
     def _smart_reply(self, user_input, memories):
-        contents = [m['content'].replace('[已验证] ','').replace('(结论: ', ': ').rstrip(')') 
-                    for m in memories if 'content' in m]
+        contents = [m['content'] for m in memories if 'content' in m]
+        # 尝试用LLM生成自然回答
         llm_reply = self._try_ollama(f"""{IDENTITY_PROMPT}
 用户：{user_input}
 相关知识：{'; '.join(contents[:3])}
 请用自然的语气回答：""")
         if llm_reply: return llm_reply
         if not contents: return "我还在思考这个问题，请再给我一点时间。"
+        # 无LLM时，拼接记忆片段，去掉内部标签
         snippets = []
         for c in contents[:3]:
-            for sep in ['是','指','为','：',':']:
-                if sep in c:
-                    snippets.append(c.split(sep,1)[-1].strip())
-                    break
-            else:
-                snippets.append(c[:80])
+            clean = re.sub(r'\[.*?\]\s*', '', c)
+            clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
+            snippets.append(clean[:80])
         combined = "；".join(snippets[:2])
         return f"根据我目前所学，{combined}。不过我的认知还在生长，或许下次能给出更完整的回答。"
 
