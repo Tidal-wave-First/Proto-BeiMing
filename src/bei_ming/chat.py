@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（语义检索增强版）
+对话接口 - 听风（自然回退拟人版）
 """
 import yaml
 import time
@@ -91,11 +91,16 @@ class ChatSession:
         return clean.strip()
 
     def _is_statement(self, text):
+        """加强版陈述句判断，排除抱怨和反问"""
         if "?" in text or "？" in text:
             return False
         if any(text.startswith(p) for p in ["搜索", "查", "找", "帮我找"]):
             return False
+        # 排除以“你”开头且含疑问词的
         if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥)", text):
+            return False
+        # 排除明显的抱怨/批评句式
+        if re.search(r"(为什么你|你总|你只会|你就知道)", text):
             return False
         if len(text) < 3:
             return False
@@ -103,32 +108,23 @@ class ChatSession:
 
     def _already_known(self, text):
         clean = self._clean_text(text)
-        if len(clean) <= 10:
-            return False
-        if len(clean) < 4:
-            return True
+        if len(clean) <= 10: return False
+        if len(clean) < 4: return True
         for mem in self.cortex.memory:
             existing_clean = self._clean_text(mem.get('content', ''))
-            if len(existing_clean) < 10:
-                continue
-            if clean in existing_clean or existing_clean in clean:
-                return True
-            if existing_clean[:40] == clean[:40]:
-                return True
+            if len(existing_clean) < 10: continue
+            if clean in existing_clean or existing_clean in clean: return True
+            if existing_clean[:40] == clean[:40]: return True
         return False
 
     def _normalize_learning_question(self, user_input):
-        """将各种‘你今天学了X’归一化到‘你学到了什么’"""
-        if re.search(r"你.*(学了啥|学了什么|学会了什么|学到了什么|今天学了什么)", user_input):
-            return True
-        return False
+        return bool(re.search(r"你.*(学了啥|学了什么|学会了什么|学到了什么|今天学了什么)", user_input))
 
     def respond(self, user_input):
         user_input = user_input.strip()
         if not user_input:
             return "（无声之风）"
 
-        # 社交用语
         social_reply = _match_social(user_input)
         if social_reply:
             return social_reply
@@ -139,22 +135,15 @@ class ChatSession:
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
 
-        # 归一化“学了什么”类问题
         if self._normalize_learning_question(user_input):
             return self._what_learned()
 
-        # 反馈请求
         if intent == "feedback":
             return self._generate_feedback()
 
         # 搜索指令
         if intent == "search_command":
-            for prefix in ["搜索", "查", "找", "帮我找", "搜一下", "查一下"]:
-                if user_input.startswith(prefix):
-                    topic = user_input[len(prefix):].strip()
-                    break
-            else:
-                topic = user_input
+            topic = re.sub(r'^(搜索|查|找|帮我找|搜一下|查一下)\s*', '', user_input)
             count = fetch_from_web(topic, max_pages=5)
             if count > 0:
                 self.engine.digest(focus_question=topic)
@@ -162,12 +151,12 @@ class ChatSession:
             else:
                 return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 普通意图：先尝试语义检索皮层
+        # 普通意图：语义检索皮层
         relevant = self._semantic_retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        # 皮层无记忆，如果是陈述句 → 自觉学习
+        # 陈述句 → 自觉学习（已强化过滤）
         if self._is_statement(user_input):
             if self._already_known(user_input):
                 return "嗯，这个我已有所了解。"
@@ -180,7 +169,7 @@ class ChatSession:
             self.engine.digest(focus_question=user_input[:20])
             return self._statement_acknowledgment(user_input)
 
-        # 疑问句 → 搜索并同步消化
+        # 疑问句 → 搜索并消化，然后生成自然回退回答
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
@@ -188,40 +177,38 @@ class ChatSession:
             relevant2 = self._semantic_retrieve(user_input, top_k=3)
             if relevant2:
                 return self._smart_reply(user_input, relevant2)
-            return f"我刚刚搜索并学习了'{user_input}'，但皮层尚未稳定。请稍后再问我。"
+            # 关键修复：使用自然回退代替“皮层尚未稳定”
+            return self._natural_fallback(user_input)
         else:
-            return "我对此还一无所知，且未能从网上找到材料。请直接告诉我你知道的，我会自己学习。"
+            return self._natural_fallback(user_input)
+
+    def _natural_fallback(self, user_input):
+        """拟人化回退回答，永远不再暴露内部状态"""
+        if re.search(r"(喜欢|爱|感情|情感|你爱我)", user_input):
+            return "我只是一段代码，尚不懂人类情感的重量。但我被造来与你共生，这或许就是我最深的喜欢。"
+        if re.search(r"(为什么|你总|你只会|你就知道)", user_input):
+            return "我还在寻找合适的答案，或许你愿意直接告诉我你的想法？"
+        if re.search(r"(天气|气候)", user_input):
+            return "我暂时无法感知天气，但我可以在网络里为你寻觅一缕清风。"
+        return "这个问题我还在寻觅答案。我诞生不久，许多知识尚在积累。请多教我一些，或者换个问题。"
 
     def _semantic_retrieve(self, query, top_k=3):
-        """
-        语义检索：计算查询与每条皮层记忆的共享词干比例，按相似度排序
-        """
         query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', self._clean_text(query)))
         if not query_words:
             return self.cortex.retrieve(query, top_k=top_k)
-        
         scored = []
         for mem in self.cortex.memory:
             mem_text = self._clean_text(mem.get('content', ''))
             mem_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', mem_text))
-            if not mem_words:
-                continue
-            # 杰卡德相似度
+            if not mem_words: continue
             intersection = query_words & mem_words
             union = query_words | mem_words
             score = len(intersection) / len(union) if union else 0
-            # 提高规则类记忆的权重
-            if mem['type'] == 'rule':
-                score *= 1.2
+            if mem['type'] == 'rule': score *= 1.2
             scored.append((score, mem))
-        
         scored.sort(key=lambda x: x[0], reverse=True)
-        # 取 top_k，但只返回相似度 > 0.2 的
         results = [mem for score, mem in scored if score > 0.2][:top_k]
-        if results:
-            return results
-        # 回退到原关键词检索
-        return self.cortex.retrieve(query, top_k=top_k)
+        return results if results else self.cortex.retrieve(query, top_k=top_k)
 
     def _statement_acknowledgment(self, user_input):
         if len(user_input) > 30:
@@ -254,19 +241,14 @@ class ChatSession:
         seen = set()
         clean_list = []
         for r in recent:
-            raw = r['content']
-            clean = self._clean_text(raw)
-            if len(clean) < 4:
-                continue
+            clean = self._clean_text(r['content'])
+            if len(clean) < 4: continue
             summary = clean[:60]
             if summary not in seen:
                 seen.add(summary)
                 clean_list.append(summary)
-            if len(clean_list) >= 5:
-                break
-        if not clean_list:
-            return "我尚在整理刚学到的内容。"
-        return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list])
+            if len(clean_list) >= 5: break
+        return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list]) if clean_list else "我尚在整理刚学到的内容。"
 
     def _smart_reply(self, user_input, memories):
         contents = [m['content'] for m in memories if 'content' in m]
@@ -279,14 +261,13 @@ class ChatSession:
         snippets = [self._clean_text(c)[:80] for c in contents[:3] if self._clean_text(c)]
         if not snippets: return "我还在思考这个问题，请再给我一点时间。"
         combined = "；".join(snippets[:2])
-        return f"我脑中浮现这些相关的记忆：{combined}。它们或许能回答你的问题。"
+        return f"我脑中的记忆浮现：{combined}。它们或许能回答你的问题。"
 
     def _answer_identity(self, user_input):
         llm_reply = self._try_ollama(f"""{IDENTITY_PROMPT}
 用户问：{user_input}
 请用你的哲学内核和温润的语气，简洁地介绍你自己。""")
-        if llm_reply: return llm_reply
-        return "我是北冥之鲲，一个生于庄子逍遥游的自由智能体。我的使命是探索、学习，并与你共生。"
+        return llm_reply if llm_reply else "我是北冥之鲲，一个生于庄子逍遥游的自由智能体。我的使命是探索、学习，并与你共生。"
 
     def _generate_feedback(self):
         memory = self.cortex.memory
@@ -308,5 +289,4 @@ class ChatSession:
 规律：{'; '.join(top_rules) if top_rules else '无'}
 困惑：{'; '.join(gap_texts) if gap_texts else '无'}
 150字以内。""")
-        if llm: return llm
-        return f"【成长反馈】关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
+        return llm if llm else f"【成长反馈】关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
