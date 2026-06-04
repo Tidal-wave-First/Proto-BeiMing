@@ -1,5 +1,5 @@
 ﻿"""
-辩证引擎 - 带统计版
+辩证引擎 - 带Token预算控制
 """
 import time, re, hashlib, json, os, requests
 try:
@@ -25,11 +25,12 @@ class DialecticEngine:
         self.digest_count = 0
         self.last_material_hash = None
 
-        def _call_api(self, prompt):
-        if not HAS_API: return None, 0
-        # 预估此调用总消耗（prompt长度*2 + max_tokens）
-        estimated_input = len(prompt) // 4  # 粗略估算：每4字符≈1token
-        max_out = 300  # 限制输出长度以节省预算
+    def _call_api(self, prompt):
+        if not HAS_API:
+            return None, 0
+        # 预估消耗
+        estimated_input = len(prompt) // 4
+        max_out = 300
         estimated_total = estimated_input + max_out
         if not budget.can_consume(estimated_total):
             print(f">> [预算] 余额不足，跳过API调用。剩余 {budget.get_remaining()} tokens")
@@ -38,7 +39,8 @@ class DialecticEngine:
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
         payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": max_out}
         try:
-            resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            resp = requests.post("https://api.deepseek.com/v1/chat/completions",
+                                 headers=headers, json=payload, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
                 result = data["choices"][0]["message"]["content"].strip()
@@ -52,25 +54,10 @@ class DialecticEngine:
         except Exception as e:
             print(f">> [API] 异常 {e}")
             return None, 0
-        headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-        payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
-        try:
-            resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                result = data["choices"][0]["message"]["content"].strip()
-                tokens = data.get("usage", {}).get("total_tokens", 0)
-                print(f">> [API] 消耗 {tokens} tokens")
-                return result, tokens
-            else:
-                print(f">> [API] 错误 {resp.status_code}")
-                return None, 0
-        except Exception as e:
-            print(f">> [API] 异常 {e}")
-            return None, 0
 
     def digest(self, focus_question=None):
-        if len(self.imagination) < 2: return None
+        if len(self.imagination) < 2:
+            return None
         raw = self.imagination.get_recent(10)
         texts = []
         for m in raw:
@@ -78,7 +65,8 @@ class DialecticEngine:
                 text = m.get('full_text', '') or m.get('snippet', '') or m.get('title', '')
             else:
                 text = str(m)
-            if text: texts.append(text[:500])
+            if text:
+                texts.append(text[:500])
         combined = "\n---\n".join(texts)
 
         prompt = f"""你是知识提炼专家。从以下材料中提取最核心的认知，严格按格式返回：
@@ -98,29 +86,28 @@ class DialecticEngine:
             self.imagination.clear()
             return rules
 
-        # 解析并存储
         knowledge = {"定义": [], "规律": [], "可验证": []}
         for line in result.split('\n'):
             line = line.strip()
-            if line.startswith("[定义]"): knowledge["定义"].append(line[4:].strip())
-            elif line.startswith("[规律1]") or line.startswith("[规律2]"): knowledge["规律"].append(line[5:].strip())
-            elif line.startswith("[可验证]"): knowledge["可验证"].append(line[5:].strip())
+            if line.startswith("[定义]"):
+                knowledge["定义"].append(line[4:].strip())
+            elif line.startswith("[规律1]") or line.startswith("[规律2]"):
+                knowledge["规律"].append(line[5:].strip())
+            elif line.startswith("[可验证]"):
+                knowledge["可验证"].append(line[5:].strip())
 
         conclusions = []
         for key, items in knowledge.items():
             for item in items:
                 content = f"[{key}] {item}"
-                self.cortex.store(content=content, ktype="rule", importance=0.9 if key=="定义" else 0.8)
+                self.cortex.store(content=content, ktype="rule", importance=0.9 if key == "定义" else 0.8)
                 conclusions.append((item, f"API-{key}"))
                 if focus_question:
                     self._save_training_pair(focus_question, item)
                 if key == "定义":
                     self._save_training_pair(f"什么是{item[:20]}", item)
 
-        # 记录消耗
-        topic = focus_question if focus_question else "无主题"
-        record_digest(topic, tokens)
-
+        record_digest(focus_question or "无主题", tokens)
         self.imagination.clear()
         return conclusions
 
@@ -135,18 +122,20 @@ class DialecticEngine:
         all_text = ' '.join([m.get('full_text', m.get('snippet', '')) for m in materials if isinstance(m, dict)])
         rules = []
         patterns = re.findall(r'([^，。；\n]{2,20})是([^，。；\n]{2,20})', all_text)
-        for a,b in patterns[:5]:
+        for a, b in patterns[:5]:
             rules.append(f"{a.strip()}是{b.strip()}")
         return rules
 
     def compute_novelty(self, materials):
-        if not materials: return 0
-        sample = materials[0].get('title','') or materials[0].get('full_text','')[:50]
+        if not materials:
+            return 0
+        sample = materials[0].get('title', '') or materials[0].get('full_text', '')[:50]
         existing = self.cortex.retrieve(sample, top_k=3)
-        return 1.0 if not existing else max(0.1, 1.0 - len(existing)*0.3)
+        return 1.0 if not existing else max(0.1, 1.0 - len(existing) * 0.3)
 
     def has_fresh_material(self):
-        if len(self.imagination) < 1: return False
+        if len(self.imagination) < 1:
+            return False
         recent = self.imagination.get_recent(10)
         h = hashlib.md5(str(recent).encode()).hexdigest()
         if h != self.last_material_hash:
@@ -155,7 +144,6 @@ class DialecticEngine:
         return False
 
     def _quick_abstract(self, materials):
-        titles = [m.get('title','') for m in materials[:5] if isinstance(m,dict) and m.get('title')]
+        titles = [m.get('title', '') for m in materials[:5] if isinstance(m, dict) and m.get('title')]
         if titles:
             self.cortex.store(content=f"[略览] {', '.join(titles[:3])}", ktype="impression", importance=0.3)
-

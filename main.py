@@ -14,6 +14,7 @@ from src.bei_ming.background import BackgroundDigestor
 from src.bei_ming.autonomous_explorer import AutonomousExplorer
 from src.bei_ming.dreamer import Dreamer
 from src.bei_ming.dashboard import get_status, load_stats
+from src.bei_ming.token_budget import budget
 from src.bei_ming.weaver import KnowledgeWeaver
 from src.bei_ming.self_examiner import SelfExaminer
 import src.bei_ming.senses as senses_mod
@@ -133,3 +134,4 @@ if __name__ == '__main__':
     print(">> 北冥之鲲已化鹏，教学主任已就位。")
     if INDEPENDENT: print(">> 独立模式：API导师已静默。")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+
