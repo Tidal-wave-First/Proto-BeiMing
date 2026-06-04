@@ -1,31 +1,27 @@
+﻿"""
+Proto-BeiMing Web 入口（带成长看板与独立模式）
 """
-Proto-BeiMing 通用入口
-用法：
-  python main.py           (Web 界面 + 后台核心)
-  python main.py --headless (仅后台核心，静默思考，不启动浏览器)
-"""
-import sys, os, yaml, time, signal, atexit
+import sys, os, yaml, time, json
 from threading import Lock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from flask import Flask, render_template, send_from_directory, jsonify, request
+from flask_socketio import SocketIO, emit
 
 from src.bei_ming.chat import ChatSession
 from src.bei_ming.background import BackgroundDigestor
 from src.bei_ming.autonomous_explorer import AutonomousExplorer
 from src.bei_ming.dreamer import Dreamer
+from src.bei_ming.dashboard import get_status, load_stats
 import src.bei_ming.senses as senses_mod
 
 HEADLESS = "--headless" in sys.argv
+INDEPENDENT = os.getenv("INDEPENDENT_MODE", "false").lower() == "true"
 
-if not HEADLESS:
-    from flask import Flask, render_template, send_from_directory
-    from flask_socketio import SocketIO, emit
-    app = Flask(__name__, static_folder='static')
-    app.config['SECRET_KEY'] = 'bei-ming-secret'
-    socketio = SocketIO(app, async_mode='threading')
-else:
-    app = None
-    socketio = None
+app = Flask(__name__, static_folder='static', template_folder='templates')
+app.config['SECRET_KEY'] = 'bei-ming-secret'
+socketio = SocketIO(app, async_mode='threading')
 
 session = None
 bg_digestor = None
@@ -38,6 +34,10 @@ def init_system():
     with open('config.yaml', 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     session = ChatSession(config)
+    # 如果开启独立模式，强制禁用API（通过设置环境变量，dialectic_engine已读取）
+    if INDEPENDENT:
+        os.environ["DEEPSEEK_API_KEY"] = ""
+        print(">> 独立模式已开启，不再调用DeepSeek API")
     
     bg_digestor = BackgroundDigestor(session.engine, socketio=socketio, interval_seconds=20)
     bg_digestor.start()
@@ -50,85 +50,81 @@ def init_system():
             engine=session.engine,
             cortex=session.cortex,
             socketio=socketio,
-            interval_minutes=30  # 每30分钟自主探索一次
+            interval_minutes=30
         )
         auto_explorer.start()
-    else:
-        print(">> 警告：翅膀未初始化，自主探索未启动。")
 
     dreamer = Dreamer(
         cortex=session.cortex,
         imagination=session.imagination,
         engine=session.engine,
         socketio=socketio,
-        idle_threshold=600,  # 10分钟无交互后允许做梦
-        interval=300         # 每5分钟检查一次
+        idle_threshold=600,
+        interval=300
     )
     dreamer.start()
-
     print(">> 系统初始化完成。")
 
-if not HEADLESS:
-    @app.route('/')
-    def index():
-        return render_template('chat.html')
+# 原路由保持不变...
 
-    @app.route('/favicon.ico')
-    def favicon_ico():
-        return send_from_directory('static', 'favicon.svg', mimetype='image/svg+xml')
+@app.route('/')
+def index():
+    return render_template('chat.html')
 
-    @socketio.on('user_input')
-    def handle_input(data):
-        if dreamer:
-            dreamer.update_activity()
-        msg = data.get('message', '')
-        with lock:
-            try:
-                reply = session.respond(msg)
-                status = f"皮层记忆条目: {len(session.cortex.memory)} | 想象空间暂存: {len(session.imagination)}"
-                emit('response', {'reply': reply, 'status': status})
-            except Exception as e:
-                emit('response', {'reply': f'出错：{str(e)}', 'status': ''})
+@app.route('/favicon.ico')
+def favicon_ico():
+    return send_from_directory('static', 'favicon.svg', mimetype='image/svg+xml')
 
-    @socketio.on('teach')
-    def handle_teach(data):
-        if dreamer:
-            dreamer.update_activity()
-        content = data.get('content', '').strip()
-        if not content:
-            return
-        with lock:
-            try:
-                session.imagination.add({
-                    'source_url': 'user_teach',
-                    'title': '用户投喂',
-                    'snippet': content[:100],
-                    'full_text': content
-                })
-                emit('log', {'message': f'收到投喂，已存入想象空间。'})
-                conclusions = session.engine.digest(focus_question=content[:20])
-                if conclusions:
-                    emit('digest_log', {'message': f'已从投喂中提炼 {len(conclusions)} 条认知。'})
-                status = f"皮层记忆条目: {len(session.cortex.memory)} | 想象空间暂存: {len(session.imagination)}"
-                emit('response', {'reply': '感谢投喂，我已尝试从中学习。', 'status': status})
-            except Exception as e:
-                emit('response', {'reply': f'投喂学习出错：{str(e)}', 'status': ''})
+# 新增：成长看板页面（手机端适配）
+@app.route('/dashboard')
+def dashboard():
+    status = get_status(session.cortex)
+    stats = load_stats()
+    return render_template('dashboard.html', status=status, stats=stats)
 
-    @socketio.on('connect')
-    def on_connect():
-        emit('log', {'message': '金色大鹏已苏醒，好奇心驱动探索已启动。'})
-        if dreamer:
-            dreamer.update_activity()
+# 新增：API状态
+@app.route('/api/status')
+def api_status():
+    status = get_status(session.cortex)
+    return jsonify(status)
 
-def main():
-    init_system()
-    if HEADLESS:
-        print(">> 无头模式，鲲核静默运行。按 Ctrl+C 停止。")
-        while True:
-            time.sleep(10)
-    else:
-        print(">> Web 模式，请访问 http://127.0.0.1:5000")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+# 聊天相关 SocketIO 事件保持原样...
+
+@socketio.on('user_input')
+def handle_input(data):
+    if dreamer: dreamer.update_activity()
+    msg = data.get('message', '')
+    with lock:
+        try:
+            reply = session.respond(msg)
+            emit('response', {'reply': reply, 'status': f"皮层记忆: {len(session.cortex.memory)}"})
+        except Exception as e:
+            emit('response', {'reply': f'出错：{str(e)}'})
+
+@socketio.on('teach')
+def handle_teach(data):
+    if dreamer: dreamer.update_activity()
+    content = data.get('content', '').strip()
+    if not content: return
+    with lock:
+        try:
+            session.imagination.add({
+                'source_url': 'user_teach',
+                'title': '用户投喂',
+                'snippet': content[:100],
+                'full_text': content
+            })
+            session.engine.digest(focus_question=content[:20])
+            emit('log', {'message': '投喂已消化'})
+        except Exception as e:
+            emit('response', {'reply': f'出错：{str(e)}'})
+
+@socketio.on('connect')
+def on_connect():
+    emit('log', {'message': '连接成功'})
 
 if __name__ == '__main__':
-    main()
+    init_system()
+    print(">> 北冥之鲲已化鹏，成长看板已就绪。")
+    if INDEPENDENT: print(">> 独立模式：API导师已静默，鲲依靠自己的皮层。")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)

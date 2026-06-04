@@ -1,5 +1,5 @@
 ﻿"""
-辩证引擎 - DeepSeek 精炼+兜底+日志
+辩证引擎 - 带统计版
 """
 import time, re, hashlib, json, os, requests
 try:
@@ -7,6 +7,7 @@ try:
     load_dotenv()
 except:
     pass
+from .dashboard import record_digest
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
@@ -24,31 +25,27 @@ class DialecticEngine:
         self.last_material_hash = None
 
     def _call_api(self, prompt):
-        if not HAS_API:
-            print(">> [API] 未配置密钥")
-            return None
+        if not HAS_API: return None, 0
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
         payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
         try:
-            print(">> [API] 正在调用导师...")
             resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
             if resp.status_code == 200:
-                result = resp.json()["choices"][0]["message"]["content"].strip()
-                print(f">> [API] 返回内容：{result[:80]}...")
-                return result
+                data = resp.json()
+                result = data["choices"][0]["message"]["content"].strip()
+                tokens = data.get("usage", {}).get("total_tokens", 0)
+                print(f">> [API] 消耗 {tokens} tokens")
+                return result, tokens
             else:
-                print(f">> [API] 错误：{resp.status_code} {resp.text}")
-                return None
+                print(f">> [API] 错误 {resp.status_code}")
+                return None, 0
         except Exception as e:
-            print(f">> [API] 异常：{e}")
-            return None
+            print(f">> [API] 异常 {e}")
+            return None, 0
 
     def digest(self, focus_question=None):
-        if len(self.imagination) < 2:
-            print(">> [消化] 材料不足")
-            return None
+        if len(self.imagination) < 2: return None
         raw = self.imagination.get_recent(10)
-        print(f">> [消化] 咀嚼 {len(raw)} 条材料...")
         texts = []
         for m in raw:
             if isinstance(m, dict):
@@ -58,7 +55,6 @@ class DialecticEngine:
             if text: texts.append(text[:500])
         combined = "\n---\n".join(texts)
 
-        # 调用API精炼
         prompt = f"""你是知识提炼专家。从以下材料中提取最核心的认知，严格按格式返回：
 [定义] <一句话定义>
 [规律1] <核心规律>
@@ -67,39 +63,39 @@ class DialecticEngine:
 
 材料：
 {combined[:3000]}"""
-        result = self._call_api(prompt)
+        result, tokens = self._call_api(prompt)
         if not result:
-            print(">> [消化] API精炼失败，回退统计提取")
+            print(">> API精炼失败，回退统计提取")
             rules = self._statistical_extraction(raw)
             for r in rules[:5]:
                 self.cortex.store(content=f"[统计] {r}", ktype="rule", importance=0.5)
             self.imagination.clear()
             return rules
 
-        # 解析API结果
-        knowledge_items = {"定义": [], "规律": [], "可验证": []}
+        # 解析并存储
+        knowledge = {"定义": [], "规律": [], "可验证": []}
         for line in result.split('\n'):
             line = line.strip()
-            if line.startswith("[定义]"): knowledge_items["定义"].append(line[4:].strip())
-            elif line.startswith("[规律1]") or line.startswith("[规律2]"): knowledge_items["规律"].append(line[5:].strip())
-            elif line.startswith("[可验证]"): knowledge_items["可验证"].append(line[5:].strip())
+            if line.startswith("[定义]"): knowledge["定义"].append(line[4:].strip())
+            elif line.startswith("[规律1]") or line.startswith("[规律2]"): knowledge["规律"].append(line[5:].strip())
+            elif line.startswith("[可验证]"): knowledge["可验证"].append(line[5:].strip())
 
         conclusions = []
-        for key, items in knowledge_items.items():
+        for key, items in knowledge.items():
             for item in items:
                 content = f"[{key}] {item}"
                 self.cortex.store(content=content, ktype="rule", importance=0.9 if key=="定义" else 0.8)
-                print(f">> [消化] 存入皮层：{content[:60]}...")
                 conclusions.append((item, f"API-{key}"))
-                # 生成训练数据
                 if focus_question:
                     self._save_training_pair(focus_question, item)
                 if key == "定义":
                     self._save_training_pair(f"什么是{item[:20]}", item)
 
-        # 清理想象空间
+        # 记录消耗
+        topic = focus_question if focus_question else "无主题"
+        record_digest(topic, tokens)
+
         self.imagination.clear()
-        print(f">> [消化] 完成，共提炼 {len(conclusions)} 条知识。")
         return conclusions
 
     def _save_training_pair(self, question, answer):

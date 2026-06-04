@@ -1,0 +1,61 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>鲲之成长看板</title>
+    <style>
+        body { font-family: sans-serif; background: #0b1a2f; color: #d0e4f5; padding: 20px; }
+        .card { background: #0e233a; border-radius: 10px; padding: 15px; margin-bottom: 15px; }
+        .title { color: #ffd700; font-size: 1.2em; margin-bottom: 10px; }
+        .value { font-size: 2em; font-weight: bold; color: #5af78e; }
+        .label { color: #aaa; font-size: 0.8em; }
+        .row { display: flex; gap: 10px; flex-wrap: wrap; }
+        .row > .card { flex: 1; min-width: 120px; }
+        table { width: 100%; border-collapse: collapse; color: #ccc; }
+        td { padding: 5px 0; border-bottom: 1px solid #1a2f44; }
+    </style>
+</head>
+<body>
+    <h1 style="color:#ffd700;">🦅 北冥之鲲 · 成长看板</h1>
+    <div class="row">
+        <div class="card">
+            <div class="title">皮层记忆</div>
+            <div class="value">{{ status['皮层记忆总数'] }}</div>
+            <div class="label">规律 {{ status['规律数量'] }} | 印象 {{ status['印象数量'] }}</div>
+        </div>
+        <div class="card">
+            <div class="title">API导师</div>
+            <div class="value">{{ stats['total_calls'] }}</div>
+            <div class="label">调用次数 | 消耗 {{ stats['total_tokens'] }} tokens</div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="title">最近消化主题</div>
+        {% if status['最近消化主题'] %}
+            <ul>
+            {% for t in status['最近消化主题'] %}
+                <li>{{ t }}</li>
+            {% endfor %}
+            </ul>
+        {% else %}
+            <p>暂无消化记录</p>
+        {% endif %}
+    </div>
+    <div class="card">
+        <div class="title">最近消耗详情</div>
+        {% if status['最近消化记录'] %}
+            <table>
+            <tr><th>时间</th><th>主题</th><th>Token</th></tr>
+            {% for r in status['最近消化记录'] %}
+            <tr><td>{{ r['time'] }}</td><td>{{ r['topic'] }}</td><td>{{ r['tokens'] }}</td></tr>
+            {% endfor %}
+            </table>
+        {% else %}
+            <p>无数据</p>
+        {% endif %}
+    </div>
+    <p style="text-align:center;color:#aaa;">自动刷新：每30秒</p>
+    <script>setTimeout(function(){ location.reload(); }, 30000);</script>
+</body>
+</html>
