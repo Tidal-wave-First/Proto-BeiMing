@@ -1,7 +1,10 @@
 ﻿"""
-好奇心引擎 - 带学习路径规划
+好奇心引擎 - 无ollama依赖版
 """
-import ollama, random, re, os, requests
+import random
+import re
+import os
+import requests
 from collections import defaultdict
 from itertools import combinations
 
@@ -14,20 +17,44 @@ class CuriosityEngine:
         self.model = model
 
     def generate_topics(self, max_topics=3):
-        # 优先使用学习路径规划
         if HAS_API:
             path = self.plan_learning_path(max_topics)
             if path:
                 return path
-        # 回退到基于概念缺口的逻辑
         concepts = self.cortex.get_concepts()
         if len(concepts) < 5:
             return self._seed_topics()
-        # 原逻辑...
-        return self._seed_topics()
+        cooccur = defaultdict(int)
+        concept_list = list(concepts.keys())
+        for mem in self.cortex.memory:
+            mem_words = set()
+            text = mem.get('content', '')
+            for w in concept_list:
+                if w in text:
+                    mem_words.add(w)
+            for a, b in combinations(mem_words, 2):
+                key = tuple(sorted([a, b]))
+                cooccur[key] += 1
+        connectivity = defaultdict(int)
+        for (a, b), cnt in cooccur.items():
+            connectivity[a] += 1
+            connectivity[b] += 1
+        candidates = []
+        for w in concepts:
+            freq = concepts[w]
+            conn = connectivity[w]
+            if conn < 2:
+                candidates.append((w, freq, conn))
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        topics = [c[0] for c in candidates[:max_topics]]
+        if not topics:
+            low_conn = sorted(connectivity.items(), key=lambda x: x[1])[:10]
+            if len(low_conn) >= 2:
+                a, b = random.sample(low_conn, 2)
+                topics.append(f"{a[0]}与{b[0]}的关系")
+        return topics[:max_topics] if topics else self._seed_topics()
 
     def plan_learning_path(self, n=3):
-        """用DeepSeek规划最优学习主题序列"""
         memory_summaries = [m['content'][:100] for m in self.cortex.memory[-20:]]
         prompt = f"""你是自主学习规划师。根据我当前的知识片段，请推荐接下来最值得学习的3个主题。
 要求：主题应基于现有知识的薄弱环节，并且彼此之间有逻辑递进关系。直接输出主题短语，每行一个。
@@ -51,6 +78,5 @@ class CuriosityEngine:
         random.shuffle(seeds)
         return seeds[:3]
 
-    # 保留原有方法_get_concepts等...
     def get_concepts(self):
         return self.cortex.get_concepts()
