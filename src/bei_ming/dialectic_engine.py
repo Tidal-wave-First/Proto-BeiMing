@@ -175,3 +175,54 @@ class DialecticEngine:
         titles = [m.get('title','') for m in materials[:5] if isinstance(m,dict) and m.get('title')]
         if titles:
             self.cortex.store(content=f"[略览] {', '.join(titles[:3])}", ktype="impression", importance=0.3)
+
+    def deep_think(self, question, context_materials=None):
+        """
+        深度思维模式：针对一个具体问题，请求DeepSeek展示推理过程。
+        返回 (answer, reasoning_chain, tokens_used)
+        """
+        if not HAS_API:
+            return None, None, 0
+
+        # 构建提示词，要求展示推理链和思维框架
+        prompt = f"""你是一位导师。请回答以下问题，并且必须展示你的完整推理过程。
+问题：{question}
+
+要求：
+1. 先给出最终答案。
+2. 然后展示你的推理步骤（至少3步）。
+3. 最后给出一个通用的思维模板，用于解决类似问题。
+
+格式：
+[答案] <你的最终答案>
+[推理] <分步推理过程>
+[模板] <一个通用的思考框架>"""
+        if context_materials:
+            prompt += f"\n\n可供参考的背景材料：\n{context_materials[:1000]}"
+
+        # 使用较高的 max_tokens 以保证推理链完整
+        result, tokens = self._call_api(prompt, max_tokens=700)
+        if not result:
+            return None, None, 0
+
+        # 解析各部分
+        answer_match = re.search(r'\[答案\]\s*(.+?)(?:\n\[推理\]|\Z)', result, re.DOTALL)
+        reasoning_match = re.search(r'\[推理\]\s*(.+?)(?:\n\[模板\]|\Z)', result, re.DOTALL)
+        template_match = re.search(r'\[模板\]\s*(.+?)$', result, re.DOTALL)
+
+        answer = answer_match.group(1).strip() if answer_match else ""
+        reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
+        template = template_match.group(1).strip() if template_match else ""
+
+        # 存入皮层
+        full_chain = f"[答案] {answer}\n[推理] {reasoning}\n[模板] {template}"
+        if full_chain:
+            self.cortex.store(
+                content=f"[思维] {full_chain[:500]}",
+                ktype="rule",
+                importance=0.95
+            )
+            # 也存为训练数据
+            self._save_training_pair(question, answer)
+
+        return answer, full_chain, tokens

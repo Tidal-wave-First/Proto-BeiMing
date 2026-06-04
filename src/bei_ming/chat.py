@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（思维检索增强版）
+对话接口 - 听风（深度思维增强版）
 """
 import yaml
 import time
@@ -35,6 +35,11 @@ def _match_social(user_input):
             return SOCIAL_REPLIES[key]
     return None
 
+def _is_deep_think_query(user_input):
+    """判断是否需要深度思维模式"""
+    keywords = ["分析", "解释", "怎么看", "为什么", "如何", "怎样", "思维", "辩证", "逻辑", "推理", "论证"]
+    return any(kw in user_input for kw in keywords) or len(user_input) > 30
+
 class ChatSession:
     def __init__(self, config=None):
         self.config = config or {}
@@ -64,6 +69,9 @@ class ChatSession:
         return clean.strip()
 
     def _is_statement(self, text):
+        # 排除带有思维关键词的，它们不是陈述
+        if _is_deep_think_query(text):
+            return False
         if "?" in text or "？" in text: return False
         if any(text.startswith(p) for p in ["搜索","查","找","帮我找"]): return False
         if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥)", text): return False
@@ -111,9 +119,30 @@ class ChatSession:
                 return f"我已从 {count} 个来源学习了关于'{topic}'的知识，并进行了消化反思。"
             return "此次探索未能捕获材料，或许风平浪静。"
 
+        # 优先尝试深度思维模式
+        if _is_deep_think_query(user_input) and self.engine.HAS_API and budget.can_consume(800):
+            print(f">> [深度思维] 启动针对：{user_input}")
+            answer, reasoning, tokens = self.engine.deep_think(user_input)
+            if answer:
+                budget.consume(tokens)
+                return f"（我刚刚请教了导师，并内化了思考过程）\n\n{answer}"
+            # 失败则回退到普通检索
         relevant = self._semantic_retrieve(user_input, top_k=5)
         if relevant:
             return self._smart_reply(user_input, relevant)
+
+        # 如果皮层无记忆，且是查询，尝试搜索后再次尝试深度思维
+        if _is_deep_think_query(user_input):
+            count = fetch_from_web(user_input, max_pages=3)
+            if count > 0:
+                self.engine.digest(focus_question=user_input)
+                time.sleep(2)
+                # 消化后再试一次深度思维（这次可能有背景材料）
+                if budget.can_consume(800):
+                    answer, reasoning, tokens = self.engine.deep_think(user_input, "（已搜索相关材料）")
+                    if answer:
+                        budget.consume(tokens)
+                        return f"（我搜索并请教了导师）\n\n{answer}"
 
         if self._is_statement(user_input):
             if self._already_known(user_input): return "嗯，这个我已有所了解。"
@@ -157,7 +186,6 @@ class ChatSession:
         return [mem for score, mem in scored if score > 0.15][:top_k] or self.cortex.retrieve(query, top_k=top_k)
 
     def _smart_reply(self, user_input, memories):
-        # 优先使用 [思维] 类记忆
         thinking_mems = [m for m in memories if 'content' in m and '[思维]' in m['content']]
         if thinking_mems:
             think_content = self._clean_text(thinking_mems[0]['content'])
@@ -166,11 +194,8 @@ class ChatSession:
                 template = template_match.group(1)
                 knowledge_snippet = self._clean_text(memories[0]['content'])[:100] if memories else ""
                 return f"我试着用学到的思维方法来回答：{template}\n\n结合相关知识，我认为：{knowledge_snippet}"
-        
-        # 普通知识拼接
         snippets = [self._clean_text(m['content'])[:100] for m in memories[:3] if m.get('content')]
-        if not snippets:
-            return "我还在思考这个问题，请再给我一点时间。"
+        if not snippets: return "我还在思考这个问题，请再给我一点时间。"
         return "我记起一些相关的知识：\n" + "\n".join([f"· {s}" for s in snippets])
 
     def _statement_acknowledgment(self, user_input):
@@ -197,8 +222,7 @@ class ChatSession:
 
     def _what_learned(self):
         memory = self.cortex.memory
-        if len(memory) < 3:
-            return "我刚苏醒，皮层里只有几条最初的认知。"
+        if len(memory) < 3: return "我刚苏醒，皮层里只有几条最初的认知。"
         recent = [m for m in memory if m['type'] in ('rule','impression')]
         recent.sort(key=lambda x: x.get('created_at',0), reverse=True)
         seen = set()
@@ -211,8 +235,7 @@ class ChatSession:
                 seen.add(summary)
                 clean_list.append(summary)
             if len(clean_list) >= 5: break
-        if not clean_list:
-            return "我尚在整理刚学到的内容。"
+        if not clean_list: return "我尚在整理刚学到的内容。"
         return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list])
 
     def _generate_feedback(self):

@@ -1,9 +1,10 @@
 ﻿"""
-Token 预算管理器 - 鲲之度支
+Token 预算管理器 - 鲲之度支（2分钱版）
 """
 import os, json, time, threading
 
-DAILY_BUDGET_TOKENS = 6000
+DAILY_BUDGET_TOKENS = 12000  # 对应约0.02元
+
 BUDGET_FILE = "token_budget.json"
 
 class TokenBudget:
