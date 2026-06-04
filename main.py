@@ -1,4 +1,4 @@
-﻿"""
+"""
 Proto-BeiMing Web 入口（带成长看板与独立模式）
 """
 import sys, os, yaml, time, json
@@ -127,4 +127,4 @@ if __name__ == '__main__':
     init_system()
     print(">> 北冥之鲲已化鹏，成长看板已就绪。")
     if INDEPENDENT: print(">> 独立模式：API导师已静默，鲲依靠自己的皮层。")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
