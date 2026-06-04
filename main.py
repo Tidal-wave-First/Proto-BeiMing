@@ -17,6 +17,7 @@ from src.bei_ming.dashboard import get_status, load_stats
 from src.bei_ming.token_budget import budget
 from src.bei_ming.weaver import KnowledgeWeaver
 from src.bei_ming.self_examiner import SelfExaminer
+from src.bei_ming.reviewer import ConsciousReviewer
 import src.bei_ming.senses as senses_mod
 
 HEADLESS = "--headless" in sys.argv
@@ -75,6 +76,8 @@ def init_system():
     weaver.start()
     examiner = SelfExaminer(session.cortex, session.engine, interval_minutes=180)
     examiner.start()
+    reviewer = ConsciousReviewer(session.cortex, session.engine, interval_minutes=30)
+    reviewer.start()
 
     print(">> 系统初始化完成。")
 
@@ -134,4 +137,5 @@ if __name__ == '__main__':
     print(">> 北冥之鲲已化鹏，教学主任已就位。")
     if INDEPENDENT: print(">> 独立模式：API导师已静默。")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+
 
