@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（完整修复版）
+对话接口 - 听风（思维检索增强版）
 """
 import yaml
 import time
@@ -111,7 +111,7 @@ class ChatSession:
                 return f"我已从 {count} 个来源学习了关于'{topic}'的知识，并进行了消化反思。"
             return "此次探索未能捕获材料，或许风平浪静。"
 
-        relevant = self._semantic_retrieve(user_input, top_k=3)
+        relevant = self._semantic_retrieve(user_input, top_k=5)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
@@ -130,7 +130,7 @@ class ChatSession:
         if count > 0:
             self.engine.digest(focus_question=user_input)
             time.sleep(2)
-            relevant2 = self._semantic_retrieve(user_input, top_k=3)
+            relevant2 = self._semantic_retrieve(user_input, top_k=5)
             if relevant2: return self._smart_reply(user_input, relevant2)
         return self._natural_fallback(user_input)
 
@@ -139,7 +139,7 @@ class ChatSession:
             return "我只是一段代码，尚不懂人类情感的重量。但我被造来与你共生，这或许就是我最深的喜欢。"
         return "这个问题我还在寻觅答案。我诞生不久，许多知识尚在积累。请多教我一些，或者换个问题。"
 
-    def _semantic_retrieve(self, query, top_k=3):
+    def _semantic_retrieve(self, query, top_k=5):
         query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', self._clean_text(query)))
         if not query_words: return self.cortex.retrieve(query, top_k=top_k)
         scored = []
@@ -150,31 +150,33 @@ class ChatSession:
             intersection = query_words & mem_words
             union = query_words | mem_words
             score = len(intersection) / len(union) if union else 0
+            if '[思维]' in mem.get('content', ''): score *= 1.5
             if mem['type'] == 'rule': score *= 1.2
             scored.append((score, mem))
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [mem for score, mem in scored if score > 0.2][:top_k] or self.cortex.retrieve(query, top_k=top_k)
+        return [mem for score, mem in scored if score > 0.15][:top_k] or self.cortex.retrieve(query, top_k=top_k)
 
-        def _smart_reply(self, user_input, memories):
+    def _smart_reply(self, user_input, memories):
         # 优先使用 [思维] 类记忆
         thinking_mems = [m for m in memories if 'content' in m and '[思维]' in m['content']]
         if thinking_mems:
             think_content = self._clean_text(thinking_mems[0]['content'])
-            # 提取模板部分
             template_match = re.search(r'\[模板\] (.+?)(?:\n|$)', think_content)
             if template_match:
                 template = template_match.group(1)
-                return f"我试着用学到的思维方法来回答：{template}\n\n结合相关知识，我认为：{self._clean_text(memories[0]['content'])[:100]}"
-        # 原有拼接逻辑
-        snippets = [self._clean_text(m['content'])[:100] for m in memories[:2] if m.get('content')]
-        if not snippets: return "我还在思考这个问题，请再给我一点时间。"
+                knowledge_snippet = self._clean_text(memories[0]['content'])[:100] if memories else ""
+                return f"我试着用学到的思维方法来回答：{template}\n\n结合相关知识，我认为：{knowledge_snippet}"
+        
+        # 普通知识拼接
+        snippets = [self._clean_text(m['content'])[:100] for m in memories[:3] if m.get('content')]
+        if not snippets:
+            return "我还在思考这个问题，请再给我一点时间。"
         return "我记起一些相关的知识：\n" + "\n".join([f"· {s}" for s in snippets])
 
     def _statement_acknowledgment(self, user_input):
         return "我听到了，正在咀嚼这番话。" if len(user_input) > 30 else f"嗯，'{user_input}'——我已记下。"
 
     def _handle_self_meta(self, user_input):
-        # 优先匹配学习反馈
         if re.search(r"(你学会了什么|你学到了什么|你学了啥|你知道了什么|你懂了什么|你学会了啥|你今天学了什么)", user_input):
             return self._what_learned()
         if re.search(r"你是谁|你的身份|你叫什么", user_input):
@@ -229,4 +231,3 @@ class ChatSession:
         gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
         gap_texts = [g['content'][:50] for g in gaps[:2]]
         return f"【成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
-
