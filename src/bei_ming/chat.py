@@ -10,6 +10,7 @@ from .imagination import ImaginationSpace
 from .cortex import Cortex
 from .laboratory import Laboratory
 from .dialectic_engine import DialecticEngine
+from .token_budget import budget
 from .guardian import Guardian
 from .intent import classify
 
@@ -254,3 +255,4 @@ class ChatSession:
         gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
         gap_texts = [g['content'][:50] for g in gaps[:2]]
         return f"【成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
+

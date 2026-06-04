@@ -22,6 +22,7 @@ class DialecticEngine:
         self.laboratory = laboratory
         self.model = model
         self.ethics = ethics_rules or []
+        self.HAS_API = HAS_API
         self.digest_count = 0
         self.last_material_hash = None
 
@@ -226,3 +227,4 @@ class DialecticEngine:
             self._save_training_pair(question, answer)
 
         return answer, full_chain, tokens
+
