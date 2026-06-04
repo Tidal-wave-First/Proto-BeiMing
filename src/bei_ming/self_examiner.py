@@ -1,11 +1,8 @@
 ﻿"""
-自我考官 - 鲲之自省 (Self Examiner)
-定期生成自测问题，检验自身理解，发现矛盾并修正。
+自我考官 - 鲲之自省 + Token预算
 """
-import os
-import requests
-import time
-import threading
+import os, requests, time, threading
+from .token_budget import budget
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 HAS_API = bool(API_KEY)
@@ -36,6 +33,10 @@ class SelfExaminer:
 
     def examine(self):
         if not HAS_API: return
+        if not budget.can_consume(400):
+            print(">> [考官] 预算不足，跳过")
+            return
+
         rules = [m for m in self.cortex.memory if m['type'] == 'rule']
         if len(rules) < 5: return
         recent = sorted(rules, key=lambda x: x.get('created_at', 0), reverse=True)[:10]
@@ -53,19 +54,15 @@ class SelfExaminer:
 我的知识：
 {chr(10).join(['- '+c for c in contents])}"""
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 300
-        }
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 300}
         try:
             resp = requests.post("https://api.deepseek.com/v1/chat/completions",
                                  headers=headers, json=payload, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
                 result = data["choices"][0]["message"]["content"].strip()
-                # 解析问题和答案，暂时只记录到皮层作为反思记录
+                tokens = data.get("usage", {}).get("total_tokens", 400)
+                budget.consume(tokens)
                 self.cortex.store(
                     content=f"[自省] {result[:200]}",
                     ktype="history",

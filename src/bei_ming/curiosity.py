@@ -1,12 +1,10 @@
 ﻿"""
-好奇心引擎 - 课程规划师版
+好奇心引擎 - 课程规划师 + Token预算
 """
-import random
-import re
-import os
-import requests
+import random, re, os, requests
 from collections import defaultdict
 from itertools import combinations
+from .token_budget import budget
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 HAS_API = bool(API_KEY)
@@ -15,34 +13,27 @@ class CuriosityEngine:
     def __init__(self, cortex, model="qwen2.5:7b"):
         self.cortex = cortex
         self.model = model
-        self.learning_path = []  # 存储规划的学习路线
+        self.learning_path = []
         self.path_index = 0
 
     def generate_topics(self, max_topics=3):
-        # 如果有规划好的路线，优先使用
         if self.learning_path and self.path_index < len(self.learning_path):
             topic = [self.learning_path[self.path_index]]
             self.path_index += 1
             return topic
         
-        # 路线用完或没有，请求DeepSeek规划新路线
-        if HAS_API:
-            new_path = self.plan_learning_path(5)  # 一次规划5个主题，按顺序学习
+        if HAS_API and budget.can_consume(300):
+            new_path = self.plan_learning_path(5)
             if new_path:
                 self.learning_path = new_path
                 self.path_index = 1
                 return [self.learning_path[0]]
         
-        # 回退到基于概念缺口的逻辑
         return self._fallback_topics(max_topics)
 
     def plan_learning_path(self, n=5):
-        """请求DeepSeek生成一条有递进关系的学习路径"""
-        # 收集当前皮层知识摘要
         memory_summaries = [m['content'][:80] for m in self.cortex.memory[-30:]]
-        if not memory_summaries:
-            return None
-        
+        if not memory_summaries: return None
         prompt = f"""你是自主学习规划师。我当前的知识片段如下：
 {chr(10).join(memory_summaries)}
 
@@ -52,19 +43,15 @@ class CuriosityEngine:
 - 彼此之间应有从基础到高级、从现象到原理的递进关系
 - 每个主题是一个适合网络搜索的短语
 - 直接输出主题，每行一个，不要编号或解释"""
-        
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 200
-        }
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 200}
         try:
             resp = requests.post("https://api.deepseek.com/v1/chat/completions",
                                  headers=headers, json=payload, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
+                tokens = data.get("usage", {}).get("total_tokens", 200)
+                budget.consume(tokens)
                 topics = [line.strip() for line in data["choices"][0]["message"]["content"].strip().split('\n') if line.strip()]
                 return topics[:n]
         except:

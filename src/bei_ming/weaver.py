@@ -1,11 +1,8 @@
 ﻿"""
-知识织网师 - 鲲之经络 (Weaver)
-定期调用API，找出皮层知识间深层联系，生成原理/框架类认知。
+知识织网师 - 鲲之经络 (Weaver) + Token预算
 """
-import os
-import requests
-import time
-import threading
+import os, requests, time, threading
+from .token_budget import budget
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 HAS_API = bool(API_KEY)
@@ -36,7 +33,11 @@ class KnowledgeWeaver:
 
     def weave(self):
         if not HAS_API: return
-        # 获取最近10条高质量记忆（类型为rule）
+        # 预估消耗约500 tokens
+        if not budget.can_consume(500):
+            print(">> [织网] 预算不足，跳过")
+            return
+
         rules = [m for m in self.cortex.memory if m['type'] == 'rule']
         if len(rules) < 5: return
         recent = sorted(rules, key=lambda x: x.get('created_at', 0), reverse=True)[:10]
@@ -47,18 +48,15 @@ class KnowledgeWeaver:
 请找出这些知识之间的深层联系，归纳出一个更高层次的原理或框架（一句话即可）。
 格式：[高层原则] <你的归纳>"""
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.4,
-            "max_tokens": 150
-        }
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.4, "max_tokens": 150}
         try:
             resp = requests.post("https://api.deepseek.com/v1/chat/completions",
                                  headers=headers, json=payload, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
                 result = data["choices"][0]["message"]["content"].strip()
+                tokens = data.get("usage", {}).get("total_tokens", 500)
+                budget.consume(tokens)
                 if result.startswith("[高层原则]"):
                     principle = result[6:].strip()
                     self.cortex.store(

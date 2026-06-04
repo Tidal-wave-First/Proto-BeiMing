@@ -8,6 +8,7 @@ try:
 except:
     pass
 from .dashboard import record_digest
+from .token_budget import budget
 
 API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
@@ -24,8 +25,33 @@ class DialecticEngine:
         self.digest_count = 0
         self.last_material_hash = None
 
-    def _call_api(self, prompt):
+        def _call_api(self, prompt):
         if not HAS_API: return None, 0
+        # 预估此调用总消耗（prompt长度*2 + max_tokens）
+        estimated_input = len(prompt) // 4  # 粗略估算：每4字符≈1token
+        max_out = 300  # 限制输出长度以节省预算
+        estimated_total = estimated_input + max_out
+        if not budget.can_consume(estimated_total):
+            print(f">> [预算] 余额不足，跳过API调用。剩余 {budget.get_remaining()} tokens")
+            return None, 0
+
+        headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+        payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": max_out}
+        try:
+            resp = requests.post("https://api.deepseek.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                result = data["choices"][0]["message"]["content"].strip()
+                tokens = data.get("usage", {}).get("total_tokens", estimated_total)
+                print(f">> [API] 消耗 {tokens} tokens，剩余 {budget.get_remaining()}")
+                budget.consume(tokens)
+                return result, tokens
+            else:
+                print(f">> [API] 错误 {resp.status_code}")
+                return None, 0
+        except Exception as e:
+            print(f">> [API] 异常 {e}")
+            return None, 0
         headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
         payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 500}
         try:
@@ -132,3 +158,4 @@ class DialecticEngine:
         titles = [m.get('title','') for m in materials[:5] if isinstance(m,dict) and m.get('title')]
         if titles:
             self.cortex.store(content=f"[略览] {', '.join(titles[:3])}", ktype="impression", importance=0.3)
+
