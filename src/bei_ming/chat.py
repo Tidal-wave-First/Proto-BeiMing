@@ -155,7 +155,17 @@ class ChatSession:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [mem for score, mem in scored if score > 0.2][:top_k] or self.cortex.retrieve(query, top_k=top_k)
 
-    def _smart_reply(self, user_input, memories):
+        def _smart_reply(self, user_input, memories):
+        # 优先使用 [思维] 类记忆
+        thinking_mems = [m for m in memories if 'content' in m and '[思维]' in m['content']]
+        if thinking_mems:
+            think_content = self._clean_text(thinking_mems[0]['content'])
+            # 提取模板部分
+            template_match = re.search(r'\[模板\] (.+?)(?:\n|$)', think_content)
+            if template_match:
+                template = template_match.group(1)
+                return f"我试着用学到的思维方法来回答：{template}\n\n结合相关知识，我认为：{self._clean_text(memories[0]['content'])[:100]}"
+        # 原有拼接逻辑
         snippets = [self._clean_text(m['content'])[:100] for m in memories[:2] if m.get('content')]
         if not snippets: return "我还在思考这个问题，请再给我一点时间。"
         return "我记起一些相关的知识：\n" + "\n".join([f"· {s}" for s in snippets])
@@ -219,3 +229,4 @@ class ChatSession:
         gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
         gap_texts = [g['content'][:50] for g in gaps[:2]]
         return f"【成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}"
+
