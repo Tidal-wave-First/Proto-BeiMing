@@ -1,12 +1,12 @@
-"""
-Proto-BeiMing Web 入口（带成长看板与独立模式）
+﻿"""
+Proto-BeiMing Web 入口（教学主任版）
 """
 import sys, os, yaml, time, json
 from threading import Lock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from flask import Flask, render_template, send_from_directory, jsonify, request
+from flask import Flask, render_template, send_from_directory, jsonify
 from flask_socketio import SocketIO, emit
 
 from src.bei_ming.chat import ChatSession
@@ -14,6 +14,8 @@ from src.bei_ming.background import BackgroundDigestor
 from src.bei_ming.autonomous_explorer import AutonomousExplorer
 from src.bei_ming.dreamer import Dreamer
 from src.bei_ming.dashboard import get_status, load_stats
+from src.bei_ming.weaver import KnowledgeWeaver
+from src.bei_ming.self_examiner import SelfExaminer
 import src.bei_ming.senses as senses_mod
 
 HEADLESS = "--headless" in sys.argv
@@ -27,14 +29,17 @@ session = None
 bg_digestor = None
 auto_explorer = None
 dreamer = None
+weaver = None
+examiner = None
 lock = Lock()
 
 def init_system():
-    global session, bg_digestor, auto_explorer, dreamer
+    global session, bg_digestor, auto_explorer, dreamer, weaver, examiner
     with open('config.yaml', 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     session = ChatSession(config)
-    # 如果开启独立模式，强制禁用API（通过设置环境变量，dialectic_engine已读取）
+    
+    # 独立模式
     if INDEPENDENT:
         os.environ["DEEPSEEK_API_KEY"] = ""
         print(">> 独立模式已开启，不再调用DeepSeek API")
@@ -63,9 +68,14 @@ def init_system():
         interval=300
     )
     dreamer.start()
-    print(">> 系统初始化完成。")
 
-# 原路由保持不变...
+    # 教学主任新模块
+    weaver = KnowledgeWeaver(session.cortex, interval_minutes=120)
+    weaver.start()
+    examiner = SelfExaminer(session.cortex, session.engine, interval_minutes=180)
+    examiner.start()
+
+    print(">> 系统初始化完成。")
 
 @app.route('/')
 def index():
@@ -75,20 +85,15 @@ def index():
 def favicon_ico():
     return send_from_directory('static', 'favicon.svg', mimetype='image/svg+xml')
 
-# 新增：成长看板页面（手机端适配）
 @app.route('/dashboard')
 def dashboard():
     status = get_status(session.cortex)
     stats = load_stats()
     return render_template('dashboard.html', status=status, stats=stats)
 
-# 新增：API状态
 @app.route('/api/status')
 def api_status():
-    status = get_status(session.cortex)
-    return jsonify(status)
-
-# 聊天相关 SocketIO 事件保持原样...
+    return jsonify(get_status(session.cortex))
 
 @socketio.on('user_input')
 def handle_input(data):
@@ -125,6 +130,6 @@ def on_connect():
 
 if __name__ == '__main__':
     init_system()
-    print(">> 北冥之鲲已化鹏，成长看板已就绪。")
-    if INDEPENDENT: print(">> 独立模式：API导师已静默，鲲依靠自己的皮层。")
+    print(">> 北冥之鲲已化鹏，教学主任已就位。")
+    if INDEPENDENT: print(">> 独立模式：API导师已静默。")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
