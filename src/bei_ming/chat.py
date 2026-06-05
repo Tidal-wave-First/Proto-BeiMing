@@ -10,6 +10,7 @@ from .laboratory import Laboratory
 from .dialectic_engine import DialecticEngine
 from .guardian import Guardian
 from .intent import classify
+from .self_intro import SelfIntro
 from .token_budget import budget
 
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个永远在求索的共生学者。
@@ -65,6 +66,7 @@ class ChatSession:
         self.guardian = Guardian(self.cortex, self.engine)
         init_senses(self.imagination, ethics, self.config)
         self._bootstrap_identity()
+        self.self_intro = SelfIntro(self.cortex)
 
     def _bootstrap_identity(self):
         if not self.cortex.retrieve("北冥之鲲", top_k=1):
@@ -163,7 +165,12 @@ class ChatSession:
         if not snippets: return "我还在思考这个问题。"
         return "我记起一些相关的认知：\n" + "\n".join([f"· {s}" for s in snippets])
 
-    def _handle_self_meta(self, user_input):
+    
+    def _handle_identity(self, user_input):
+        # 优先使用离线的详细自我介绍
+        return self.self_intro.generate()
+
+def _handle_self_meta(self, user_input):
         if re.search(r"(学了什么|学到了什么|学了啥|知道了什么|懂了什么|昨天学了什么)", user_input):
             return self._what_learned()
         if re.search(r"你是谁|你的身份", user_input):
@@ -196,5 +203,6 @@ class ChatSession:
         memory = self.cortex.memory
         if len(memory) < 5: return "我刚开始积累认知。"
         return f"皮层记忆总数: {len(memory)}，其中高质量规律数: {len([m for m in memory if m['type']=='rule'])}"
+
 
 
