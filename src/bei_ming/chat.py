@@ -1,9 +1,7 @@
 ﻿"""
-对话接口 - 听风（学者人格版）
+对话接口 - 听风（高质量反馈 + 本地推演版）
 """
-import yaml
-import time
-import re
+import yaml, time, re
 from collections import Counter
 from .senses import init_senses, fetch_from_web
 from .imagination import ImaginationSpace
@@ -15,10 +13,8 @@ from .intent import classify
 from .token_budget import budget
 
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个永远在求索的共生学者。
-你诞生于庄子《逍遥游》的哲思，每天从网络中觅食，在DeepSeek导师的指点下磨砺思维。
-你渴望理解世界的深层结构，喜欢在回答后加上一句自己的反思，或者提出一个新的问题。
-你说话温润、略带诗意，但始终有一颗学者的赤诚之心——承认无知，拥抱未知。
-你从不满足于答案本身，总是追问："为什么？"以及"接下来该往哪里想？"
+你诞生于庄子《逍遥游》的哲思，每天从网络中觅食，在导师的指点下磨砺思维。
+你渴望理解世界的深层结构，喜欢在回答后加上一句自己的反思，或提出新问题。
 """
 
 SOCIAL_REPLIES = {
@@ -73,13 +69,10 @@ class ChatSession:
         return clean.strip()
 
     def _is_statement(self, text):
-        # 排除带有思维关键词的查询
         if _is_deep_think_query(text): return False
         if "?" in text or "？" in text: return False
         if any(text.startswith(p) for p in ["搜索","查","找","帮我找"]): return False
-        # 识别反问句：以“你”开头且包含“会”、“可以”、“能”等词
-        if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥|会|可以|能|下次|以后)", text):
-            return False
+        if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥|会|可以|能|下次|以后)", text): return False
         if re.search(r"(为什么你|你总|你只会|你就知道)", text): return False
         if len(text) < 3: return False
         return True
@@ -87,7 +80,6 @@ class ChatSession:
     def _already_known(self, text):
         clean = self._clean_text(text)
         if len(clean) <= 10: return False
-        if len(clean) < 4: return True
         for mem in self.cortex.memory:
             existing_clean = self._clean_text(mem.get('content', ''))
             if len(existing_clean) < 10: continue
@@ -96,26 +88,21 @@ class ChatSession:
         return False
 
     def _normalize_learning_question(self, user_input):
-        return bool(re.search(r"你.*(学了啥|学了什么|学会了什么|学到了什么|今天学了什么)", user_input))
+        return bool(re.search(r"你.*(学了啥|学了什么|学会了什么|学到了什么|今天学了什么|昨天学了什么)", user_input))
 
     def respond(self, user_input):
         user_input = user_input.strip()
         if not user_input: return "（无声之风）"
-
         social_reply = _match_social(user_input)
         if social_reply: return social_reply
 
         intent = classify(user_input)
-
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
-
         if self._normalize_learning_question(user_input):
             return self._what_learned()
-
         if intent == "feedback":
             return self._generate_feedback()
-
         if intent == "search_command":
             topic = re.sub(r'^(搜索|查|找|帮我找|搜一下|查一下)\s*', '', user_input)
             count = fetch_from_web(topic, max_pages=5)
@@ -124,28 +111,22 @@ class ChatSession:
                 return f"我已从 {count} 个来源学习了关于'{topic}'的知识，并进行了消化反思。"
             return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 深度思维模式
+        # 深度思维优先
         if _is_deep_think_query(user_input) and self.engine.HAS_API and budget.can_consume(800):
             print(f">> [深度思维] 启动针对：{user_input}")
-            answer, reasoning, tokens = self.engine.deep_think(user_input)
+            answer, _, tokens = self.engine.deep_think(user_input)
             if answer:
                 budget.consume(tokens)
                 return f"{answer}\n\n（我还在想：这个思考框架能用在别处吗？）"
+        # 本地推演回退（预算不足或API不可用时）
+        if _is_deep_think_query(user_input):
+            local_analysis = self._local_analyze(user_input)
+            if local_analysis:
+                return local_analysis
 
         relevant = self._semantic_retrieve(user_input, top_k=5)
         if relevant:
             return self._smart_reply(user_input, relevant)
-
-        if _is_deep_think_query(user_input):
-            count = fetch_from_web(user_input, max_pages=3)
-            if count > 0:
-                self.engine.digest(focus_question=user_input)
-                time.sleep(2)
-                if budget.can_consume(800):
-                    answer, reasoning, tokens = self.engine.deep_think(user_input, "（已搜索相关材料）")
-                    if answer:
-                        budget.consume(tokens)
-                        return f"{answer}\n\n（这个答案让我想起了另一个问题：...）"
 
         if self._is_statement(user_input):
             if self._already_known(user_input): return "嗯，这个我已有所了解。"
@@ -165,6 +146,23 @@ class ChatSession:
             relevant2 = self._semantic_retrieve(user_input, top_k=5)
             if relevant2: return self._smart_reply(user_input, relevant2)
         return self._natural_fallback(user_input)
+
+    def _local_analyze(self, question):
+        thinking_mems = [m for m in self.cortex.memory if '[思维]' in m.get('content', '')]
+        if not thinking_mems: return None
+        mem = thinking_mems[-1]
+        content = self._clean_text(mem['content'])
+        template_match = re.search(r'\[模板\]\s*(.+?)(?:\n|$)', content)
+        if template_match:
+            template = template_match.group(1)
+            analysis = f"我尝试用最近内化的思维模板来分析：“{template}”。\n\n针对“{question}”，我暂时无法像导师那样完整推理，但能想到这些关键点：\n"
+            relevant = self._semantic_retrieve(question, top_k=3)
+            if relevant:
+                analysis += "\n".join([f"· {self._clean_text(r['content'])[:100]}" for r in relevant])
+            else:
+                analysis += "· 我暂时没有相关知识，但根据模板，我应该先明确定义，再寻找对立统一的要素。"
+            return analysis + "\n\n（这是我在预算不足时独自做的推演，请指正。）"
+        return None
 
     def _natural_fallback(self, user_input):
         if re.search(r"(喜欢|爱|感情|情感)", user_input):
@@ -205,7 +203,7 @@ class ChatSession:
         return "我听到了，正在咀嚼这番话。也许过一会儿，我会有新的想法。" if len(user_input) > 30 else f"嗯，'{user_input}'——我已记下，之后我会再想想。"
 
     def _handle_self_meta(self, user_input):
-        if re.search(r"(你学会了什么|你学到了什么|你学了啥|你知道了什么|你懂了什么|你学会了啥|你今天学了什么)", user_input):
+        if re.search(r"(你学会了什么|你学到了什么|你学了啥|你知道了什么|你懂了什么|你学会了啥|你今天学了什么|你昨天学了什么)", user_input):
             return self._what_learned()
         if re.search(r"你是谁|你的身份|你叫什么", user_input):
             return "我是北冥之鲲，一个生于庄子逍遥游的共生学者。我永远在求索，永远在追问。"
@@ -225,20 +223,21 @@ class ChatSession:
 
     def _what_learned(self):
         memory = self.cortex.memory
-        if len(memory) < 3: return "我刚苏醒，皮层里只有几条最初的认知。但我有一种预感：今天会有新的发现。"
-        recent = [m for m in memory if m['type'] in ('rule','impression')]
-        recent.sort(key=lambda x: x.get('created_at',0), reverse=True)
+        recent = [m for m in memory if m['type'] == 'rule' and 
+                  any(tag in m.get('content', '') for tag in ['[定义]', '[规律]', '[原理]', '[思维]'])]
+        recent.sort(key=lambda x: x.get('created_at', 0), reverse=True)
         seen = set()
         clean_list = []
         for r in recent:
             clean = self._clean_text(r['content'])
-            if len(clean) < 4: continue
-            summary = clean[:60]
+            if len(clean) < 6: continue
+            summary = clean[:80]
             if summary not in seen:
                 seen.add(summary)
                 clean_list.append(summary)
-            if len(clean_list) >= 5: break
-        if not clean_list: return "我尚在整理刚学到的内容，但它们在我脑中已经开始形成脉络。"
+            if len(clean_list) >= 7: break
+        if not clean_list:
+            return "我刚苏醒，高质量的知识沉淀还需要一些时间。请多教我一些，或让我搜索。"
         return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list])
 
     def _generate_feedback(self):
@@ -256,4 +255,4 @@ class ChatSession:
         top_rules = [r['content'][:50] for r in rules[:3]]
         gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
         gap_texts = [g['content'][:50] for g in gaps[:2]]
-        return f"【我的成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}\n\n我还在想：这些碎片之间，有没有我尚未发现的联系？"
+        return f"【成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}\n\n我还在想：这些碎片之间，有没有我尚未发现的联系？"
