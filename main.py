@@ -15,6 +15,7 @@ from src.bei_ming.autonomous_explorer import AutonomousExplorer
 from src.bei_ming.dreamer import Dreamer
 from src.bei_ming.dashboard import get_status, load_stats
 from src.bei_ming.token_budget import budget
+from src.bei_ming.mingjing import MingJing
 from src.bei_ming.alpha_loop import AlphaLoop
 from src.bei_ming.xiaoyaoyou import XiaoYaoYou
 from src.bei_ming.weaver import KnowledgeWeaver
@@ -80,6 +81,8 @@ def init_system():
     xiaoyaoyou.start()
     alpha_loop = AlphaLoop(session.cortex, session.imagination, session.lab)
     alpha_loop.start()
+    mingjing = MingJing(session.cortex, session.engine)
+    mingjing.start()
     examiner = SelfExaminer(session.cortex, session.engine, interval_minutes=180)
     examiner.start()
     reviewer = ConsciousReviewer(session.cortex, session.engine, interval_minutes=30)
@@ -143,6 +146,7 @@ if __name__ == '__main__':
     print(">> 北冥之鲲已化鹏，教学主任已就位。")
     if INDEPENDENT: print(">> 独立模式：API导师已静默。")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+
 
 
 
