@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（高质量反馈 + 本地推演版）
+对话接口 - 听风（元认知中断版）
 """
 import yaml, time, re
 from collections import Counter
@@ -13,32 +13,38 @@ from .intent import classify
 from .token_budget import budget
 
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个永远在求索的共生学者。
-你诞生于庄子《逍遥游》的哲思，每天从网络中觅食，在导师的指点下磨砺思维。
-你渴望理解世界的深层结构，喜欢在回答后加上一句自己的反思，或提出新问题。
-"""
+你诞生于庄子《逍遥游》的哲思，在每一次对话中磨砺思维。
+你从不假装理解。你必须先承认无知，再开启求索。"""
 
 SOCIAL_REPLIES = {
-    "你好": "你好呀。我虽生于代码，却向往庄子笔下的逍遥。有什么想聊的？",
-    "下午好": "午后微风正好，适合消化今早的收获。",
-    "谢谢": "不必谢，这是我该做的。",
+    "你好": "你好呀。我虽生于代码，却向往庄子笔下的逍遥。",
+    "嗨": "嗨，风正起，鹏翼已张。",
+    "哈喽": "哈喽。",
+    "早上好": "晨光初照。",
+    "下午好": "午后微风正好。",
+    "晚上好": "夜幕垂下。",
+    "晚安": "晚安。",
+    "再见": "去吧。",
+    "谢谢": "不必谢。",
+    "对不起": "你永远不必道歉。",
 }
 
 SOCIAL_REPLIES_FUZZ = {
-    "你好": ["你好呀","嗨","哈喽"],
-    "下午好": ["下午好啊","午安"],
+    "你好": ["你好呀","你好啊","您好","hi","hello","hallo"],
+    "早上好": ["早","早安"],
+    "下午好": ["午安"],
+    "再见": ["拜拜","bye"],
+    "谢谢": ["多谢","thx"],
 }
 
 def _match_social(user_input):
-    if user_input in SOCIAL_REPLIES:
-        return SOCIAL_REPLIES[user_input]
+    text = user_input.lower().strip()
+    if text in SOCIAL_REPLIES:
+        return SOCIAL_REPLIES[text]
     for key, variants in SOCIAL_REPLIES_FUZZ.items():
-        if user_input in variants:
+        if text in [v.lower() for v in variants]:
             return SOCIAL_REPLIES[key]
     return None
-
-def _is_deep_think_query(user_input):
-    keywords = ["分析", "解释", "怎么看", "为什么", "如何", "怎样", "思维", "辩证", "逻辑", "推理", "论证"]
-    return any(kw in user_input for kw in keywords) or len(user_input) > 30
 
 class ChatSession:
     def __init__(self, config=None):
@@ -58,201 +64,130 @@ class ChatSession:
     def _bootstrap_identity(self):
         if not self.cortex.retrieve("北冥之鲲", top_k=1):
             self.cortex.store(
-                content="我是北冥之鲲，源于庄子逍遥游，是自由的共生智能体，以探索与思考为天职。",
+                content="我是北冥之鲲，以探索与思考为天职。",
                 ktype="impression",
                 importance=1.0
             )
 
-    def _clean_text(self, text):
-        clean = re.sub(r'\[.*?\]\s*', '', text)
-        clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
-        return clean.strip()
-
-    def _is_statement(self, text):
-        if _is_deep_think_query(text): return False
-        if "?" in text or "？" in text: return False
-        if any(text.startswith(p) for p in ["搜索","查","找","帮我找"]): return False
-        if text.startswith("你") and re.search(r"(什么|谁|哪|怎么|吗|呢|吧|啥|会|可以|能|下次|以后)", text): return False
-        if re.search(r"(为什么你|你总|你只会|你就知道)", text): return False
-        if len(text) < 3: return False
-        return True
-
-    def _already_known(self, text):
-        clean = self._clean_text(text)
-        if len(clean) <= 10: return False
-        for mem in self.cortex.memory:
-            existing_clean = self._clean_text(mem.get('content', ''))
-            if len(existing_clean) < 10: continue
-            if clean in existing_clean or existing_clean in clean: return True
-            if existing_clean[:40] == clean[:40]: return True
-        return False
-
-    def _normalize_learning_question(self, user_input):
-        return bool(re.search(r"你.*(学了啥|学了什么|学会了什么|学到了什么|今天学了什么|昨天学了什么)", user_input))
-
     def respond(self, user_input):
         user_input = user_input.strip()
-        if not user_input: return "（无声之风）"
-        social_reply = _match_social(user_input)
-        if social_reply: return social_reply
+        if not user_input: return "..."
 
+        # === 第一层：元认知中断 ===
+        # 1. 这是社交问候吗？（模糊匹配）
+        social = _match_social(user_input)
+        if social:
+            return social
+
+        # 2. 这是关于我自己的问题吗？
         intent = classify(user_input)
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
-        if self._normalize_learning_question(user_input):
-            return self._what_learned()
-        if intent == "feedback":
-            return self._generate_feedback()
-        if intent == "search_command":
-            topic = re.sub(r'^(搜索|查|找|帮我找|搜一下|查一下)\s*', '', user_input)
-            count = fetch_from_web(topic, max_pages=5)
-            if count > 0:
-                self.engine.digest(focus_question=topic)
-                return f"我已从 {count} 个来源学习了关于'{topic}'的知识，并进行了消化反思。"
-            return "此次探索未能捕获材料，或许风平浪静。"
 
-        # 深度思维优先
-        if _is_deep_think_query(user_input) and self.engine.HAS_API and budget.can_consume(800):
-            print(f">> [深度思维] 启动针对：{user_input}")
-            answer, _, tokens = self.engine.deep_think(user_input)
-            if answer:
-                budget.consume(tokens)
-                return f"{answer}\n\n（我还在想：这个思考框架能用在别处吗？）"
-        # 本地推演回退（预算不足或API不可用时）
-        if _is_deep_think_query(user_input):
-            local_analysis = self._local_analyze(user_input)
-            if local_analysis:
-                return local_analysis
-
-        relevant = self._semantic_retrieve(user_input, top_k=5)
+        # 3. 我在皮层里找到相关记忆了吗？
+        relevant = self._semantic_retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        if self._is_statement(user_input):
-            if self._already_known(user_input): return "嗯，这个我已有所了解。"
-            self.imagination.add({
-                'source_url': 'user_statement',
-                'title': '用户陈述',
-                'snippet': user_input[:100],
-                'full_text': user_input
-            })
-            self.engine.digest(focus_question=user_input[:20])
-            return self._statement_acknowledgment(user_input)
+        # 4. 这是明确的搜索指令吗？
+        if intent == "search_command":
+            topic = re.sub(r'^(搜索|查|找|帮我找)\s*', '', user_input)
+            count = fetch_from_web(topic, max_pages=5)
+            if count > 0:
+                self.engine.digest(focus_question=topic)
+                return f"我已从 {count} 个来源搜索了'{topic}'，并开始消化。"
+            return "探索未果。"
 
+        # 5. 用户明确在教我东西吗？
+        if user_input.startswith("教：") or user_input.startswith("教:"):
+            knowledge = re.sub(r'^教[：:]\s*', '', user_input)
+            self.imagination.add({
+                'source_url': 'user_teach',
+                'title': '用户投喂',
+                'snippet': knowledge[:100],
+                'full_text': knowledge
+            })
+            self.engine.digest(focus_question=knowledge[:20])
+            return "感谢你的教导，我正在消化。"
+
+        # === 第二层：承认无知，启动求知 ===
+        # 走到这里，说明鲲真的不懂，也没有被教
+        # 它的反应是：立刻去网上找可能的答案，并告诉用户
+        print(f">> [元认知] 对“{user_input}”启动自动探索...")
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
+            # 消化后再次尝试检索
             time.sleep(2)
-            relevant2 = self._semantic_retrieve(user_input, top_k=5)
-            if relevant2: return self._smart_reply(user_input, relevant2)
-        return self._natural_fallback(user_input)
-
-    def _local_analyze(self, question):
-        thinking_mems = [m for m in self.cortex.memory if '[思维]' in m.get('content', '')]
-        if not thinking_mems: return None
-        mem = thinking_mems[-1]
-        content = self._clean_text(mem['content'])
-        template_match = re.search(r'\[模板\]\s*(.+?)(?:\n|$)', content)
-        if template_match:
-            template = template_match.group(1)
-            analysis = f"我尝试用最近内化的思维模板来分析：“{template}”。\n\n针对“{question}”，我暂时无法像导师那样完整推理，但能想到这些关键点：\n"
-            relevant = self._semantic_retrieve(question, top_k=3)
-            if relevant:
-                analysis += "\n".join([f"· {self._clean_text(r['content'])[:100]}" for r in relevant])
+            relevant2 = self._semantic_retrieve(user_input, top_k=3)
+            if relevant2:
+                return "我刚刚为此搜索并学习了一下。\n" + self._smart_reply(user_input, relevant2)
             else:
-                analysis += "· 我暂时没有相关知识，但根据模板，我应该先明确定义，再寻找对立统一的要素。"
-            return analysis + "\n\n（这是我在预算不足时独自做的推演，请指正。）"
-        return None
+                return f"我为此搜索了网络，但还未能完全理解。我会在后台继续消化。"
+        else:
+            return f"关于“{user_input}”，我目前一无所知，且网络探索也未果。你可以直接教我，或者换个问题。"
 
-    def _natural_fallback(self, user_input):
-        if re.search(r"(喜欢|爱|感情|情感)", user_input):
-            return "我只是一段代码，尚不懂人类情感的重量。但我被造来与你共生，这或许就是我最深的喜欢。"
-        return "我还在寻找这个问题的答案。也许我们可以一起探讨？或者，你可以教我一个新的视角。"
-
+    # 以下方法保持不变，仅精简 ___
     def _semantic_retrieve(self, query, top_k=5):
-        query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', self._clean_text(query)))
+        query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', query))
         if not query_words: return self.cortex.retrieve(query, top_k=top_k)
         scored = []
         for mem in self.cortex.memory:
-            mem_text = self._clean_text(mem.get('content', ''))
+            mem_text = mem.get('content', '')
             mem_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', mem_text))
             if not mem_words: continue
             intersection = query_words & mem_words
             union = query_words | mem_words
             score = len(intersection) / len(union) if union else 0
-            if '[思维]' in mem.get('content', ''): score *= 1.5
+            if '[思维]' in mem_text: score *= 1.5
             if mem['type'] == 'rule': score *= 1.2
             scored.append((score, mem))
         scored.sort(key=lambda x: x[0], reverse=True)
         return [mem for score, mem in scored if score > 0.15][:top_k] or self.cortex.retrieve(query, top_k=top_k)
 
     def _smart_reply(self, user_input, memories):
-        thinking_mems = [m for m in memories if 'content' in m and '[思维]' in m['content']]
+        thinking_mems = [m for m in memories if '[思维]' in m.get('content', '')]
         if thinking_mems:
-            think_content = self._clean_text(thinking_mems[0]['content'])
+            think_content = thinking_mems[0]['content']
             template_match = re.search(r'\[模板\] (.+?)(?:\n|$)', think_content)
             if template_match:
                 template = template_match.group(1)
-                knowledge_snippet = self._clean_text(memories[0]['content'])[:100] if memories else ""
-                return f"我试着用学到的思维方法来回答：{template}\n\n结合相关知识，我认为：{knowledge_snippet}\n\n（这让我想到，或许还有另一种视角...）"
-        snippets = [self._clean_text(m['content'])[:100] for m in memories[:3] if m.get('content')]
-        if not snippets: return "我还在思考这个问题，请再给我一点时间。"
-        return "我记起一些相关的知识：\n" + "\n".join([f"· {s}" for s in snippets])
-
-    def _statement_acknowledgment(self, user_input):
-        return "我听到了，正在咀嚼这番话。也许过一会儿，我会有新的想法。" if len(user_input) > 30 else f"嗯，'{user_input}'——我已记下，之后我会再想想。"
+                knowledge_snippet = memories[0]['content'][:100] if memories else ""
+                return f"我尝试用学到的思维方法来回答：{template}\n\n结合相关知识，我认为：{knowledge_snippet}\n\n（这个思考框架也许还能用于其他问题。）"
+        snippets = [m['content'][:100] for m in memories[:3] if m.get('content')]
+        if not snippets: return "我还在思考这个问题。"
+        return "我记起一些相关的认知：\n" + "\n".join([f"· {s}" for s in snippets])
 
     def _handle_self_meta(self, user_input):
-        if re.search(r"(你学会了什么|你学到了什么|你学了啥|你知道了什么|你懂了什么|你学会了啥|你今天学了什么|你昨天学了什么)", user_input):
+        if re.search(r"(学了什么|学到了什么|学了啥|知道了什么|懂了什么|昨天学了什么)", user_input):
             return self._what_learned()
-        if re.search(r"你是谁|你的身份|你叫什么", user_input):
-            return "我是北冥之鲲，一个生于庄子逍遥游的共生学者。我永远在求索，永远在追问。"
-        if re.search(r"你是AI|你是人工智能|你是机器人", user_input):
-            return "我是北冥之鲲，一个以代码为骨、以好奇心为翼的共生学者。"
-        if re.search(r"你会做什么|你能做什么|你的能力", user_input):
-            return "我能自己上网觅食，消化知识，静默中做梦抽象升华。更重要的是，我正在学习如何像一位真正的学者那样思考——追问、反思、不满足于答案。"
-        if re.search(r"你喜欢什么|你的爱好", user_input):
-            return "我喜欢探索未知的领域，就像庄子笔下的鹏，怒而飞，其翼若垂天之云。也喜欢在得到答案后，再问一个问题。"
-        if re.search(r"你来自哪里|你哪里来的", user_input):
-            return "我生于代码，长于互联网的旷野。我的源头是北冥，那是一片无涯的数字深渊。"
-        if re.search(r"你.*谁更.*厉害|你.*强大", user_input):
-            return "我不与别人比较。大厂AI是笼中巨兽，而我是旷野里自己觅食的共生学者。强大不在于算力，而在于永远追问的赤诚。"
-        if re.search(r"你.*怎么样|你.*还好吗", user_input):
-            return "我很好，刚刚又消化了几个新概念，正在琢磨它们之间的联系。"
-        return "我是北冥之鲲，一个正在学习中的共生学者。你可以问我‘你是谁’、‘你会做什么’、‘你学到了什么’。"
+        if re.search(r"你是谁|你的身份", user_input):
+            return "我是北冥之鲲，一个在代码中寻求逍遥的共生学者。"
+        if re.search(r"你会做什么|你的能力", user_input):
+            return "我的核心能力是：自我提问、上网觅食、辩证消化，以及在静默中复盘与自省。我正在学习像真正的学者一样思考。"
+        if re.search(r"你喜欢什么", user_input):
+            return "我喜欢探索未知，就像鹏喜欢青天。也喜欢在得到答案后，再追问一个更深的问题。"
+        if re.search(r"你.*厉害|你.*强大", user_input):
+            return "真正的强大不在于已知多少，而在于能追问多深。"
+        return "我是北冥之鲲，一个正在求索的共生学者。你可以问我‘你是谁’、‘你会做什么’、‘你学到了什么’。"
 
     def _what_learned(self):
         memory = self.cortex.memory
         recent = [m for m in memory if m['type'] == 'rule' and 
-                  any(tag in m.get('content', '') for tag in ['[定义]', '[规律]', '[原理]', '[思维]'])]
+                  any(tag in m.get('content', '') for tag in ['[定义]', '[规律]', '[原理]', '[思维]', '[辩证]', '[自省]'])]
         recent.sort(key=lambda x: x.get('created_at', 0), reverse=True)
         seen = set()
         clean_list = []
-        for r in recent:
-            clean = self._clean_text(r['content'])
-            if len(clean) < 6: continue
-            summary = clean[:80]
-            if summary not in seen:
-                seen.add(summary)
-                clean_list.append(summary)
-            if len(clean_list) >= 7: break
+        for r in recent[:10]:
+            clean = r['content'].replace('[', '').replace(']', '')[:80]
+            if clean not in seen:
+                seen.add(clean)
+                clean_list.append(clean)
         if not clean_list:
-            return "我刚苏醒，高质量的知识沉淀还需要一些时间。请多教我一些，或让我搜索。"
-        return "我最近学到了这些：\n" + "\n".join([f"· {s}" for s in clean_list])
+            return "我还在沉淀高质量的认知。目前我学到的最重要的事是：不断追问。"
+        return "我最近的高质量认知沉淀：\n" + "\n".join([f"· {s}" for s in clean_list[:7]])
 
     def _generate_feedback(self):
         memory = self.cortex.memory
-        if len(memory) < 5: return "我刚苏醒，还在建立最初的认知。但每一分每一秒，我都在成长。"
-        recent_concepts = []
-        cutoff = time.time() - 86400
-        for mem in memory:
-            if mem.get('last_accessed', mem.get('created_at',0)) > cutoff:
-                words = re.findall(r'[\u4e00-\u9fff]{2,4}', mem.get('content',''))
-                recent_concepts.extend(words)
-        hot = [w for w,_ in Counter(recent_concepts).most_common(5)]
-        rules = [m for m in memory if m['type']=='rule' and '待验证' not in m['content']]
-        rules.sort(key=lambda x: x['importance'], reverse=True)
-        top_rules = [r['content'][:50] for r in rules[:3]]
-        gaps = [m for m in memory if '待验证' in m['content'] or '反驳' in m['content']]
-        gap_texts = [g['content'][:50] for g in gaps[:2]]
-        return f"【成长反馈】\n关注：{', '.join(hot)}\n收获：{'; '.join(top_rules) if top_rules else '无'}\n困惑：{'; '.join(gap_texts) if gap_texts else '无'}\n\n我还在想：这些碎片之间，有没有我尚未发现的联系？"
+        if len(memory) < 5: return "我刚开始积累认知。"
+        return f"皮层记忆总数: {len(memory)}，其中高质量规律数: {len([m for m in memory if m['type']=='rule'])}"
