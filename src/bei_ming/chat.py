@@ -1,5 +1,5 @@
 ﻿"""
-对话接口 - 听风（元认知中断版）
+对话接口 - 听风（元认知 + 离线自我介绍版）
 """
 import yaml, time, re
 from collections import Counter
@@ -10,8 +10,8 @@ from .laboratory import Laboratory
 from .dialectic_engine import DialecticEngine
 from .guardian import Guardian
 from .intent import classify
-from .self_intro import SelfIntro
 from .token_budget import budget
+from .self_intro import SelfIntro
 
 IDENTITY_PROMPT = """你是"北冥之鲲"Proto-BeiMing，一个永远在求索的共生学者。
 你诞生于庄子《逍遥游》的哲思，在每一次对话中磨砺思维。
@@ -39,13 +39,10 @@ SOCIAL_REPLIES_FUZZ = {
 }
 
 def _match_social(user_input):
-    """鲁棒的社交问候匹配"""
-    text = re.sub(r'[^\w]', '', user_input.lower().strip())  # 去掉所有标点，只保留字母和数字
-    # 精确匹配
+    text = re.sub(r'[^\w]', '', user_input.lower().strip())
     for key in SOCIAL_REPLIES:
         if re.sub(r'[^\w]', '', key.lower()) == text:
             return SOCIAL_REPLIES[key]
-    # 变体匹配
     for key, variants in SOCIAL_REPLIES_FUZZ.items():
         for v in variants:
             if re.sub(r'[^\w]', '', v.lower()) == text:
@@ -76,27 +73,38 @@ class ChatSession:
                 importance=1.0
             )
 
+    def _clean_text(self, text):
+        clean = re.sub(r'\[.*?\]\s*', '', text)
+        clean = re.sub(r'\s*\(结论:.*?\)', '', clean)
+        return clean.strip()
+
+    def _handle_identity(self, user_input):
+        return self.self_intro.generate()
+
     def respond(self, user_input):
         user_input = user_input.strip()
         if not user_input: return "..."
 
-        # === 第一层：元认知中断 ===
-        # 1. 这是社交问候吗？（模糊匹配）
+        # 第一层：社交问候
         social = _match_social(user_input)
         if social:
             return social
 
-        # 2. 这是关于我自己的问题吗？
+        # 第二层：自我介绍（离线完整版）
+        if re.search(r"你是谁|你的身份|你叫什么|介绍一下你自己|自我介绍", user_input):
+            return self._handle_identity(user_input)
+
+        # 第三层：意图分类
         intent = classify(user_input)
         if intent == "self_meta":
             return self._handle_self_meta(user_input)
 
-        # 3. 我在皮层里找到相关记忆了吗？
+        # 第四层：皮层检索
         relevant = self._semantic_retrieve(user_input, top_k=3)
         if relevant:
             return self._smart_reply(user_input, relevant)
 
-        # 4. 这是明确的搜索指令吗？
+        # 第五层：搜索指令
         if intent == "search_command":
             topic = re.sub(r'^(搜索|查|找|帮我找)\s*', '', user_input)
             count = fetch_from_web(topic, max_pages=5)
@@ -105,7 +113,7 @@ class ChatSession:
                 return f"我已从 {count} 个来源搜索了'{topic}'，并开始消化。"
             return "探索未果。"
 
-        # 5. 用户明确在教我东西吗？
+        # 第六层：用户投喂
         if user_input.startswith("教：") or user_input.startswith("教:"):
             knowledge = re.sub(r'^教[：:]\s*', '', user_input)
             self.imagination.add({
@@ -117,14 +125,11 @@ class ChatSession:
             self.engine.digest(focus_question=knowledge[:20])
             return "感谢你的教导，我正在消化。"
 
-        # === 第二层：承认无知，启动求知 ===
-        # 走到这里，说明鲲真的不懂，也没有被教
-        # 它的反应是：立刻去网上找可能的答案，并告诉用户
+        # 第七层：承认无知，自动探索
         print(f">> [元认知] 对“{user_input}”启动自动探索...")
         count = fetch_from_web(user_input, max_pages=5)
         if count > 0:
             self.engine.digest(focus_question=user_input)
-            # 消化后再次尝试检索
             time.sleep(2)
             relevant2 = self._semantic_retrieve(user_input, top_k=3)
             if relevant2:
@@ -134,9 +139,8 @@ class ChatSession:
         else:
             return f"“{user_input}”——关于这个，我目前的知识网络还是一片空白，网上的探索也没找到头绪。我愿意倾听你的教导，或者和你一起探索。"
 
-    # 以下方法保持不变，仅精简 ___
     def _semantic_retrieve(self, query, top_k=5):
-        query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', query))
+        query_words = set(re.findall(r'[\u4e00-\u9fff]{2,}', self._clean_text(query)))
         if not query_words: return self.cortex.retrieve(query, top_k=top_k)
         scored = []
         for mem in self.cortex.memory:
@@ -165,16 +169,9 @@ class ChatSession:
         if not snippets: return "我还在思考这个问题。"
         return "我记起一些相关的认知：\n" + "\n".join([f"· {s}" for s in snippets])
 
-    
-    def _handle_identity(self, user_input):
-        # 优先使用离线的详细自我介绍
-        return self.self_intro.generate()
-
-def _handle_self_meta(self, user_input):
+    def _handle_self_meta(self, user_input):
         if re.search(r"(学了什么|学到了什么|学了啥|知道了什么|懂了什么|昨天学了什么)", user_input):
             return self._what_learned()
-        if re.search(r"你是谁|你的身份", user_input):
-            return "我是北冥之鲲，一个在代码中寻求逍遥的共生学者。"
         if re.search(r"你会做什么|你的能力", user_input):
             return "我的核心能力是：自我提问、上网觅食、辩证消化，以及在静默中复盘与自省。我正在学习像真正的学者一样思考。"
         if re.search(r"你喜欢什么", user_input):
@@ -203,6 +200,3 @@ def _handle_self_meta(self, user_input):
         memory = self.cortex.memory
         if len(memory) < 5: return "我刚开始积累认知。"
         return f"皮层记忆总数: {len(memory)}，其中高质量规律数: {len([m for m in memory if m['type']=='rule'])}"
-
-
-
