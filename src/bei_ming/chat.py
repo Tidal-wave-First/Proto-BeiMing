@@ -38,12 +38,17 @@ SOCIAL_REPLIES_FUZZ = {
 }
 
 def _match_social(user_input):
-    text = user_input.lower().strip()
-    if text in SOCIAL_REPLIES:
-        return SOCIAL_REPLIES[text]
-    for key, variants in SOCIAL_REPLIES_FUZZ.items():
-        if text in [v.lower() for v in variants]:
+    """鲁棒的社交问候匹配"""
+    text = re.sub(r'[^\w]', '', user_input.lower().strip())  # 去掉所有标点，只保留字母和数字
+    # 精确匹配
+    for key in SOCIAL_REPLIES:
+        if re.sub(r'[^\w]', '', key.lower()) == text:
             return SOCIAL_REPLIES[key]
+    # 变体匹配
+    for key, variants in SOCIAL_REPLIES_FUZZ.items():
+        for v in variants:
+            if re.sub(r'[^\w]', '', v.lower()) == text:
+                return SOCIAL_REPLIES[key]
     return None
 
 class ChatSession:
@@ -123,9 +128,9 @@ class ChatSession:
             if relevant2:
                 return "我刚刚为此搜索并学习了一下。\n" + self._smart_reply(user_input, relevant2)
             else:
-                return f"我为此搜索了网络，但还未能完全理解。我会在后台继续消化。"
+                return f"“{user_input}”——这个词/问题我还没真正理解。我刚去网上找了一圈，但线索还不够。我会把它放在心里，继续思考。也许，你可以换个角度再问我一次，或者教我一个新的视角。"
         else:
-            return f"关于“{user_input}”，我目前一无所知，且网络探索也未果。你可以直接教我，或者换个问题。"
+            return f"“{user_input}”——关于这个，我目前的知识网络还是一片空白，网上的探索也没找到头绪。我愿意倾听你的教导，或者和你一起探索。"
 
     # 以下方法保持不变，仅精简 ___
     def _semantic_retrieve(self, query, top_k=5):
@@ -191,3 +196,5 @@ class ChatSession:
         memory = self.cortex.memory
         if len(memory) < 5: return "我刚开始积累认知。"
         return f"皮层记忆总数: {len(memory)}，其中高质量规律数: {len([m for m in memory if m['type']=='rule'])}"
+
+
