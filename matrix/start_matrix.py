@@ -1,41 +1,39 @@
-﻿"""矩阵生态启动器 —— 启动所有已填充的节点"""
-import sys, os
+﻿"""矩阵生态启动器 —— 启动所有核心节点，包括短剧工作台"""
+import sys, os, time, threading
 sys.path.insert(0, 'D:/Proto-BeiMing-北冥')
+from matrix.bus.message_bus import bus
 
-print("[Matrix] ===== 鲲鹏矩阵生态启动 =====")
-print("[Matrix] 正在唤醒各节点...")
-print()
-
-# 节点启动顺序：先启动基础设施，再启动上层应用
-nodes_to_start = [
-    "cortex_node",   # 记忆皮层（基础设施）
-    "swift_node",    # 数据感官
-    "lab_node",      # 沙盒实验室
-    "think_node",    # 本地推理（需要先加载模型）
-    "api_node",      # 外部网关
-    "brain_node",    # 试错学习中枢（最后启动，连接所有节点）
+# 需要启动的核心节点（按顺序）
+NODES = [
+    "think_node",
+    "cortex_node",
+    "swift_node",
+    "lab_node",
+    "api_node"
 ]
 
-import importlib, threading, time
-
-started = []
-for node_name in nodes_to_start:
+def main():
+    print("[Matrix] ===== 鲲鹏矩阵生态启动（短剧工作台模式）=====")
+    
+    threads = []
+    for name in NODES:
+        try:
+            module = __import__(f"matrix.nodes.{name}", fromlist=['node_main'])
+            t = threading.Thread(target=module.node_main, daemon=True)
+            t.start()
+            threads.append(t)
+            print(f"[Matrix] ✓ {name} 已加入矩阵")
+        except Exception as e:
+            print(f"[Matrix] ✗ {name} 启动失败: {e}")
+    
+    print("[Matrix] 所有节点已就绪，矩阵生态正在运行...")
+    
+    # 主线程保活
     try:
-        module = importlib.import_module(f"matrix.nodes.{node_name}")
-        t = threading.Thread(target=module.node_main, daemon=True, name=node_name)
-        t.start()
-        started.append(node_name)
-        print(f"  [✓] {node_name}")
-    except Exception as e:
-        print(f"  [✗] {node_name}: {e}")
+        while True:
+            time.sleep(10)
+    except KeyboardInterrupt:
+        print("[Matrix] 矩阵关闭")
 
-print()
-print(f"[Matrix] 已启动 {len(started)}/{len(nodes_to_start)} 个节点")
-print("[Matrix] 鲲鹏正在矩阵中成长...")
-print()
-
-try:
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    print("\n[Matrix] 收到关闭信号，鲲鹏进入休眠状态。")
+if __name__ == "__main__":
+    main()
