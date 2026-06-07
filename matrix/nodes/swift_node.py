@@ -1,55 +1,71 @@
-﻿"""矩阵节点: swift_node —— 数据清洗与特征提取感官"""
-import sys, os, time, json
-sys.path.insert(0, 'D:/SwiftAssistant')
+﻿"""矩阵节点: swift_node —— 数据采集与整理感官"""
+import sys, os, time, threading, json
 sys.path.insert(0, 'D:/Proto-BeiMing-北冥')
 from matrix.nodes.base_node import MatrixNode
+from matrix.tools.web_search import WebSearcher
 
 class SwiftNode(MatrixNode):
     def __init__(self, bus):
         super().__init__("swift_node", bus)
-        
-    def on_start(self):
-        self.listen("swift.clean", self.handle_clean)
-        self.listen("swift.extract", self.handle_extract)
-        print(f"[swift_node] 数据感官已激活，等待输入...")
+        self.searcher = WebSearcher()
+        self.lock = threading.Lock()
+        self.collected_data = []
     
-    def handle_clean(self, payload, sender):
-        """简单的数据清洗：去除多余空白、特殊字符等"""
-        raw_text = payload.get("text", "")
-        # 基础清洗
-        cleaned = raw_text.strip()
-        cleaned = ' '.join(cleaned.split()) # 合并多余空白
+    def on_start(self):
+        self.listen("swift.search", self.handle_search)
+        self.listen("swift.summarize", self.handle_summarize)
+        self.listen("swift.get_data", self.handle_get_data)
+        print(f"[swift_node] 感官已激活，搜索功能{'就绪' if self.searcher.engine else '不可用'}")
+    
+    def handle_search(self, payload, sender):
+        query = payload.get("query", "")
+        max_results = payload.get("max_results", 5)
+        request_id = payload.get("request_id", "unknown")
         
-        self.emit("swift.cleaned", {
-            "original": raw_text[:100],
-            "cleaned": cleaned,
-            "length": len(cleaned)
+        print(f"[swift_node] 正在搜索: {query}")
+        results = self.searcher.search(query, max_results)
+        
+        with self.lock:
+            self.collected_data.extend(results)
+        
+        # 发布搜索结果，同时存储到皮层
+        self.emit("swift.search_result", {
+            "request_id": request_id,
+            "query": query,
+            "results": results
+        })
+        
+        # 将有效结果存入皮层
+        for r in results:
+            if "error" not in r:
+                self.emit("cortex.store", {
+                    "type": "web_search",
+                    "content": f"{r['title']}: {r['body']}",
+                    "tags": ["search", query.split()[0] if query else "unknown"],
+                    "source_url": r.get("href", "")
+                })
+    
+    def handle_summarize(self, payload, sender):
+        """整理已收集的数据，生成摘要"""
+        with self.lock:
+            data = self.collected_data[-20:]  # 最近20条
+        
+        if not data:
+            self.emit("swift.summary", {"error": "暂无已收集的数据"})
+            return
+        
+        # 请求本地大脑进行摘要推理
+        summary_prompt = f"请用中文将以下信息整理成一段连贯的摘要，用于短剧创作参考：\n{json.dumps(data, ensure_ascii=False)[:1500]}"
+        
+        self.emit("think.request", {
+            "request_id": f"summarize_{int(time.time())}",
+            "prompt": summary_prompt,
+            "system_prompt": "你是一个专业的短剧创作研究员，擅长从碎片信息中提炼故事灵感。"
         })
     
-    def handle_extract(self, payload, sender):
-        """简单的特征提取：关键词、文本长度、类型判断"""
-        text = payload.get("text", "")
-        # 简单分词和关键词提取
-        words = text.lower().split()
-        # 基于规则的类型判断
-        features = {
-            "text": text[:200],
-            "length": len(text),
-            "word_count": len(words),
-            "has_code": any(kw in text for kw in ["def ", "import ", "class ", "print(", "="]),
-            "has_question": "?" in text or any(text.startswith(w) for w in ["什么", "如何", "怎么", "为什么"]),
-            "has_error": any(kw in text.lower() for kw in ["error", "错误", "失败", "exception", "traceback"]),
-            "keywords": list(set([w for w in words if len(w) > 3 and w.isalpha()]))[:10]
-        }
-        
-        self.emit("swift.features", features)
-        # 如果检测到错误内容，可以主动通知皮层
-        if features["has_error"]:
-            self.emit("cortex.store", {
-                "type": "error_signal",
-                "content": text[:200],
-                "tags": ["error", "swift_detected"]
-            })
+    def handle_get_data(self, payload, sender):
+        """返回已收集的所有数据"""
+        self.emit("swift.data", {"data": self.collected_data[-50:]})
 
 def node_main():
     from matrix.bus.message_bus import bus

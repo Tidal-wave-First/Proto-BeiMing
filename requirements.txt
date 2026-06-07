@@ -1,9 +1,11 @@
 ﻿flask
 flask-socketio
 ddgs
+streamlit
 pyyaml
 requests
 beautifulsoup4
 lxml
 eventlet
 python-dotenv
+llama-cpp-python
