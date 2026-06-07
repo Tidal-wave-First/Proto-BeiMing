@@ -1,9 +1,23 @@
-﻿"""矩阵生态启动器 —— 启动所有核心节点，包括短剧工作台"""
+﻿"""矩阵生态启动器 —— 适配 Railway 云端环境，自动处理路径"""
 import sys, os, time, threading
-sys.path.insert(0, 'D:/Proto-BeiMing-北冥')
+
+# 关键修复：在导入任何矩阵模块前，将项目根目录加入 sys.path
+# 确保无论是本地运行还是 Railway 容器，都能找到 matrix 包
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# 也要确保上一级目录（项目根）在路径中
+PARENT_DIR = os.path.dirname(PROJECT_ROOT)
+if PARENT_DIR not in sys.path:
+    sys.path.insert(0, PARENT_DIR)
+
+print(f"[Matrix] 项目根目录: {PARENT_DIR}")
+print(f"[Matrix] Python路径: {sys.path[:3]}...")
+
 from matrix.bus.message_bus import bus
 
-# 需要启动的核心节点（按顺序）
+# 需要启动的核心节点
 NODES = [
     "think_node",
     "cortex_node",
@@ -13,7 +27,7 @@ NODES = [
 ]
 
 def main():
-    print("[Matrix] ===== 鲲鹏矩阵生态启动（短剧工作台模式）=====")
+    print("[Matrix] ===== 鲲鹏矩阵生态启动（云端模式）=====")
     
     threads = []
     for name in NODES:
