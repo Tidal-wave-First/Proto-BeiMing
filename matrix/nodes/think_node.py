@@ -1,10 +1,18 @@
-﻿"""矩阵节点: think_node —— 双引擎推理（运行时读取.env，零模块级依赖）"""
+﻿"""矩阵节点: think_node —— 双引擎推理（Railway兼容，本地模型可选）"""
 import sys, os, time, requests, json
-sys.path.insert(0, 'D:/SwiftAssistant')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, 'D:/Proto-BeiMing-北冥')
 
 from matrix.nodes.base_node import MatrixNode
-from thinking_core.local_llm import LocalLLM
+
+# 尝试加载本地模型（本地环境），Railway上跳过
+try:
+    sys.path.insert(0, 'D:/SwiftAssistant')
+    from thinking_core.local_llm import LocalLLM
+    LOCAL_LLM_AVAILABLE = True
+except ImportError:
+    LOCAL_LLM_AVAILABLE = False
+    LocalLLM = None
 
 class ThinkNode(MatrixNode):
     def __init__(self, bus):
@@ -14,36 +22,49 @@ class ThinkNode(MatrixNode):
         self.api_key = ""
         self.api_url = "https://api.deepseek.com/v1/chat/completions"
         
-        # 运行时直接读取 .env
         self._load_api_key()
         print(f"[think_node] 能源核心加载完毕。Key状态: {'有效' if self.api_key else '缺失'}")
         
     def _load_api_key(self):
-        env_path = 'D:/Proto-BeiMing-北冥/.env'
-        if os.path.exists(env_path):
-            with open(env_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, value = line.split('=', 1)
-                        key = key.strip()
-                        value = value.strip()
-                        if key == 'DEEPSEEK_API_KEY':
-                            self.api_key = value
-                            print(f"[think_node] 已从.env读取到API Key: {value[:12]}...")
-                            return
-        print("[think_node] 警告: .env中未找到DEEPSEEK_API_KEY")
+        # 优先从环境变量读取（Railway），其次从.env文件（本地）
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if not api_key:
+            env_paths = [
+                os.path.join(os.path.dirname(__file__), '..', '..', '.env'),
+                'D:/Proto-BeiMing-北冥/.env'
+            ]
+            for env_path in env_paths:
+                if os.path.exists(env_path):
+                    with open(env_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and '=' in line:
+                                k, v = line.split('=', 1)
+                                if k.strip() == 'DEEPSEEK_API_KEY':
+                                    api_key = v.strip()
+                                    break
+                    if api_key:
+                        break
+        
+        self.api_key = api_key
+        if self.api_key:
+            print(f"[think_node] 已读取到API Key: {self.api_key[:12]}...")
+        else:
+            print("[think_node] 警告: 未找到DEEPSEEK_API_KEY")
         
     def on_start(self):
         print(f"[think_node] 双引擎推理节点启动")
         print(f"[think_node] 主引擎: DeepSeek API (deepseek-chat)")
         
-        try:
-            os.chdir('D:/SwiftAssistant')
-            self.local_llm = LocalLLM(model_path=self.model_path)
-            print(f"[think_node] 回退引擎: TinyLlama 已就绪")
-        except Exception as e:
-            print(f"[think_node] 本地模型加载失败（可忽略）: {e}")
+        if LOCAL_LLM_AVAILABLE:
+            try:
+                os.chdir('D:/SwiftAssistant')
+                self.local_llm = LocalLLM(model_path=self.model_path)
+                print(f"[think_node] 回退引擎: TinyLlama 已就绪")
+            except Exception as e:
+                print(f"[think_node] 本地模型加载失败（可忽略）: {e}")
+        else:
+            print(f"[think_node] 云端模式，仅使用API推理")
         
         self.listen("think.request", self.handle_think_request)
     
@@ -57,9 +78,11 @@ class ThinkNode(MatrixNode):
         if self.api_key:
             print(f"[think_node] 正在调用 DeepSeek API...")
             response = self._think_api(prompt, system_prompt)
-        else:
+        elif self.local_llm:
             print(f"[think_node] 使用本地模型进行推理...")
             response = self._think_local(prompt, system_prompt)
+        else:
+            response = "推理引擎不可用。请设置DEEPSEEK_API_KEY环境变量。"
         
         self.emit("think.response", {
             "request_id": request_id,
@@ -88,7 +111,7 @@ class ThinkNode(MatrixNode):
                 "max_tokens": 500,
                 "temperature": 0.8
             }
-            resp = requests.post(self.api_url, headers=headers, json=data, timeout=30)
+            resp = requests.post(self.api_url, headers=headers, json=data, timeout=60)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
